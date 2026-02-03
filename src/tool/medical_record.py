@@ -61,75 +61,98 @@ class MedicalRecordParserTool(BaseTool):
             num_ctx=self.num_ctx,
         )
 
-    def _extract_structured_medical_record(self, response_text: str) -> Dict[str, Any]:
+    def _extract_structured_medical_record(self, medical_record: str) -> Dict[str, Any]:
         """
-        Extract structured medical record data from LLM response.
-        This creates a structured format similar to the mock_parsed_record in tests.
+        Extract structured medical record data by calling MedGemma model.
+        This replaces the regex-based extraction with LLM-powered structured extraction.
         """
-        import re
-        
-        structured_record = {
-            "symptoms": [],
-            "diagnoses": [],
-            "medications": [],
-            "tests": [],
-            "uncertainties": [],
-            "risk_flags": []
-        }
-        
-        # Extract symptoms - look for common symptom patterns
-        symptom_patterns = [
-            r'(?:胸痛|chest pain|疼痛|pain)[^(]*',
-            r'(?:呼吸困难|shortness of breath|dyspnea)[^(]*',
-            r'(?:头痛|headache)[^(]*',
-            r'(?:恶心|nausea)[^(]*'
-        ]
-        
-        for pattern in symptom_patterns:
-            matches = re.findall(pattern, response_text, re.IGNORECASE)
-            for match in matches:
-                if match.strip() and match not in structured_record["symptoms"]:
-                    structured_record["symptoms"].append(match.strip())
-        
-        # Extract diagnoses - look for medical condition patterns
-        diagnosis_patterns = [
-            r'(?:心肌梗死|myocardial infarction|STEMI|heart attack)[^(]*',
-            r'(?:高血压|hypertension|high blood pressure)[^(]*',
-            r'(?:糖尿病|diabetes)[^(]*'
-        ]
-        
-        for pattern in diagnosis_patterns:
-            matches = re.findall(pattern, response_text, re.IGNORECASE)
-            for match in matches:
-                if match.strip() and match not in structured_record["diagnoses"]:
-                    structured_record["diagnoses"].append(match.strip())
-        
-        # Extract medications - look for drug names and dosages
-        med_patterns = [
-            r'(?:阿司匹林|aspirin|氯吡格雷|clopidogrel|肝素|heparin)[^\n\.]*',
-            r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*\d+\s*(?:mg|ml)[^\n\.]*'
-        ]
-        
-        for pattern in med_patterns:
-            matches = re.findall(pattern, response_text, re.IGNORECASE)
-            for match in matches:
-                if match.strip() and match not in structured_record["medications"]:
-                    structured_record["medications"].append(match.strip())
-        
-        # Extract tests - look for test result patterns
-        test_patterns = [
-            r'(?:心电图|ecg|electrocardiogram)[^\n\.]*',
-            r'(?:肌钙蛋白|troponin)[^\n\.]*',
-            r'(?:血压|blood pressure)[^\n\.]*'
-        ]
-        
-        for pattern in test_patterns:
-            matches = re.findall(pattern, response_text, re.IGNORECASE)
-            for match in matches:
-                if match.strip() and match not in structured_record["tests"]:
-                    structured_record["tests"].append(match.strip())
-        
-        return structured_record
+        try:
+            # 构建专门用于结构化提取的提示
+            struct_system_prompt = (
+                "You are a medical information extraction expert. "
+                "Your task is to analyze medical records and extract structured information in JSON format.\n\n"
+                "Extract the following information from the medical record:\n"
+                "1. symptoms: List of patient symptoms mentioned\n"
+                "2. diagnoses: List of medical diagnoses or conditions\n"
+                "3. medications: List of prescribed medications and dosages\n"
+                "4. tests: List of medical tests and results\n"
+                "5. uncertainties: List of unclear or missing information\n"
+                "6. risk_flags: List of risk factors or urgent concerns\n\n"
+                "Return ONLY valid JSON format with these exact keys. "
+                "If any category has no information, return an empty list for that key."
+            )
+            
+            struct_user_prompt = f"""
+<MEDICAL_RECORD>
+{medical_record}
+</MEDICAL_RECORD>
+
+Please extract structured medical information from the above record and return it in JSON format.
+Use the following structure:
+{{
+  "symptoms": ["list", "of", "symptoms"],
+  "diagnoses": ["list", "of", "diagnoses"],
+  "medications": ["list", "of", "medications"],
+  "tests": ["list", "of", "tests"],
+  "uncertainties": ["list", "of", "uncertainties"],
+  "risk_flags": ["list", "of", "risk_flags"]
+}}
+
+Return ONLY the JSON object, no additional text or explanation.
+"""
+            
+            # 调用 MedGemma 模型进行结构化提取
+            structured_response = self._llm.invoke(
+                prompt=struct_user_prompt,
+                system_prompt=struct_system_prompt,
+            )
+            
+            # 解析 JSON 响应
+            import json
+            import re
+            
+            # 清理响应文本，提取 JSON 部分
+            # 移除可能的 Markdown 代码块标记
+            cleaned_response = re.sub(r'^```(?:json)?\s*', '', structured_response.strip())
+            cleaned_response = re.sub(r'\s*```$', '', cleaned_response)
+            
+            try:
+                structured_data = json.loads(cleaned_response)
+                
+                # 验证必需的键是否存在
+                required_keys = ["symptoms", "diagnoses", "medications", "tests", "uncertainties", "risk_flags"]
+                for key in required_keys:
+                    if key not in structured_data:
+                        structured_data[key] = []
+                    # 确保所有值都是列表
+                    if not isinstance(structured_data[key], list):
+                        structured_data[key] = []
+                        
+                return structured_data
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse structured JSON response: {e}. Response: {structured_response[:200]}...")
+                # 如果 JSON 解析失败，返回空结构
+                return {
+                    "symptoms": [],
+                    "diagnoses": [],
+                    "medications": [],
+                    "tests": [],
+                    "uncertainties": [],
+                    "risk_flags": []
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in structured medical record extraction: {e}")
+            # 出错时返回空结构
+            return {
+                "symptoms": [],
+                "diagnoses": [],
+                "medications": [],
+                "tests": [],
+                "uncertainties": [],
+                "risk_flags": []
+            }
 
     def _get_prompts(self, medical_record: str):
 
@@ -179,8 +202,8 @@ Structure your response in clear sections with simple explanations.
                 system_prompt=system_prompt,
             )
 
-            # Extract structured medical record data
-            structured_medical_record = self._extract_structured_medical_record(response)
+            # Extract structured medical record data directly from original medical record
+            structured_medical_record = self._extract_structured_medical_record(medical_record)
 
             latency = int((time.time() - start_time) * 1000)
             data = {
@@ -217,8 +240,8 @@ Structure your response in clear sections with simple explanations.
                 system_prompt=system_prompt,
             )
 
-            # Extract structured medical record data
-            structured_medical_record = self._extract_structured_medical_record(response)
+            # Extract structured medical record data directly from original medical record
+            structured_medical_record = self._extract_structured_medical_record(medical_record)
 
             latency = int((time.time() - start_time) * 1000)
             return MedicalRecordOutput(
