@@ -208,3 +208,6 @@ __marimo__/
 
 # Git keep files
 .gitkeep
+
+frontend/.npm-cache/
+frontend/.npm-logs/
