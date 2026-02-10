@@ -1,0 +1,22 @@
+# Core LLM and LangChain dependencies
+langchain-ollama>=1.0.0
+langchain-core>=1.2.0
+
+# Graph workflow
+langgraph>=1.0.0
+
+# Data validation and settings
+pydantic>=2.12.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# HTTP client for API requests
+httpx>=0.28.0
+tavily-python>=0.5.0
+
+# Testing dependencies
+pytest>=9.0.0
+
+httpx
+
+langchain_ollama
