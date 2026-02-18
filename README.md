@@ -1,16 +1,14 @@
-<div align="center">
-    <p>
-      <img src="logo1.png" alt="Medora" width="640" />
-    </p>
-    <p style="font-size: 24px; font-weight: bold; margin-bottom: 0px;">Medora：医疗解析与疾病管理智能体</p>
-    <p style="font-size: 16px; font-weight: normal; color: #666; margin-top: 0; margin-bottom: 6px;">面向慢病患者的就诊后阶段医学信息理解与长期疾病管理助手</p>
-    <hr>
-    <p style="display: flex; gap: 12px; justify-content: center;">
-        <img src="https://img.shields.io/badge/python-≥3.11-blue?logo=python&logoColor=white" alt="Python">
-        <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-        <img src="https://img.shields.io/badge/LangGraph-1.0+-purple?style=flat&logo=langgraph&logoColor=white" alt="LangGraph">
-    </p>
-</div>
+<p align="center">
+  <img src="logo1.png" alt="Medora" width="640" />
+</p>
+
+<h1 align="center">Medora：医疗解析与疾病管理智能体</h1>
+
+<p align="center">
+    <img src="https://img.shields.io/badge/python-≥3.11-blue?logo=python&logoColor=white" alt="Python">
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+    <img src="https://img.shields.io/badge/LangGraph-1.0+-purple?style=flat&logo=langgraph&logoColor=white" alt="LangGraph">
+</p>
 
 ## 📊 背景
 
