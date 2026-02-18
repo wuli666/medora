@@ -4,10 +4,11 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Sparkles, Send, Paperclip, Plus, MessageSquare, Menu, X,
+  Sparkles, Send, Paperclip, Plus, MessageSquare, X, Calendar,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   type ChatMessage,
   type ChatSession,
@@ -43,7 +44,7 @@ function AssistantBubble({ content, isLatest }: { content: string; isLatest: boo
   const show = isLatest && !done ? displayed : content;
 
   return (
-    <div className="glass-card border-sky-200/70 bg-sky-50/55 p-5 max-w-[85%] md:max-w-[70%] prose prose-sm prose-neutral dark:prose-invert max-w-none shadow-[0_10px_24px_hsla(var(--gradient-start)/0.10)]">
+    <div className="w-full prose prose-sm prose-neutral dark:prose-invert max-w-none py-2">
       <ReactMarkdown>{show}</ReactMarkdown>
       {isLatest && !done && (
         <span className="inline-block w-2 h-4 bg-primary/60 rounded-sm animate-pulse ml-0.5" />
@@ -74,10 +75,45 @@ type UiMessage = ChatMessage & {
 };
 type LoadingStage = { key: string; label: string };
 
-const QUICK_PROMPTS = [
-  "请用通俗语言解释这份检查报告",
-  "帮我梳理复诊前需要关注的三个重点",
-  "根据目前情况给我一周的健康管理建议",
+// 日历事件类型
+type CalendarEvent = {
+  id: string;
+  date: Date;
+  type: "medication" | "appointment" | "followup";
+  title: string;
+  description: string;
+};
+
+// 模拟日历数据
+const mockCalendarEvents: CalendarEvent[] = [
+  {
+    id: "1",
+    date: new Date(2026, 1, 10),
+    type: "medication",
+    title: "服用降压药",
+    description: "每天早上8点服用",
+  },
+  {
+    id: "2",
+    date: new Date(2026, 1, 15),
+    type: "appointment",
+    title: "心内科复诊",
+    description: "王医生专家门诊",
+  },
+  {
+    id: "3",
+    date: new Date(2026, 1, 20),
+    type: "followup",
+    title: "血糖复查",
+    description: "空腹血糖检测",
+  },
+  {
+    id: "4",
+    date: new Date(2026, 1, 25),
+    type: "medication",
+    title: "糖尿病用药调整",
+    description: "二甲双胍增量",
+  },
 ];
 
 const formatTime = (date: Date) =>
@@ -87,12 +123,13 @@ const formatTime = (date: Date) =>
   }).format(date);
 
 const STAGE_CLASS: Record<string, string> = {
-  quick_router: "border-indigo-200 bg-indigo-50/60",
-  tooler: "border-sky-200 bg-sky-50/60",
-  searcher: "border-violet-200 bg-violet-50/60",
-  planner: "border-cyan-200 bg-cyan-50/60",
-  reflector: "border-amber-200 bg-amber-50/60",
-  summarize: "border-emerald-200 bg-emerald-50/60",
+  // use the former border colors as the background
+  quick_router: "bg-indigo-200/60",
+  tooler: "bg-sky-200/60",
+  searcher: "bg-violet-200/60",
+  planner: "bg-cyan-200/60",
+  reflector: "bg-amber-200/60",
+  summarize: "bg-emerald-200/60",
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
@@ -138,23 +175,23 @@ const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[
 /* ── Main page ── */
 const Chat = () => {
   const [sessions] = useState<ChatSession[]>(mockSessions);
-  const [messages, setMessages] = useState<UiMessage[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content:
-        "您好，我是 **MedInsight 智能医疗助手**。\n\n我可以帮您解读病历、分析影像、并生成随访建议。您可以先上传资料，再直接提问。",
-      timestamp: new Date(),
-    },
-  ]);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  // preview 状态：页面初次进入时仅展示展开后的标题区域
+  const [sidebarPreview, setSidebarPreview] = useState(false);
+  const [calendarPreview, setCalendarPreview] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingFlow, setLoadingFlow] = useState<LoadingStage[]>([]);
   const [loadingStageIdx, setLoadingStageIdx] = useState(0);
   const [loadingVisibleCount, setLoadingVisibleCount] = useState(1);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
+  const [yearSelectorOpen, setYearSelectorOpen] = useState(false);
+  const [monthSelectorOpen, setMonthSelectorOpen] = useState(false);
+  const [displayYear, setDisplayYear] = useState<number>(new Date().getFullYear());
+  const [displayMonth, setDisplayMonth] = useState<number>(new Date().getMonth());
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -190,6 +227,20 @@ const Chat = () => {
 
   useEffect(() => () => eventSourceRef.current?.close(), []);
 
+  // 页面加载时临时以 "标题预览" 形式展开左侧面板，3 秒后恢复为未展开状态
+  useEffect(() => {
+    setSidebarPreview(true);
+    setCalendarPreview(true);
+    setSidebarOpen(true);
+    setCalendarOpen(true);
+    const t = setTimeout(() => {
+      setSidebarOpen(false);
+      setCalendarOpen(false);
+      setSidebarPreview(false);
+      setCalendarPreview(false);
+    }, 3000);
+    return () => clearTimeout(t);
+  }, []);
   const handleSend = async () => {
     const text = input.trim();
     if (!text && !previewImage) return;
@@ -311,159 +362,422 @@ const Chat = () => {
     setInput(text);
   };
 
+  const EMPTY_TASKS = [
+    {
+      text: "请用通俗语言解释这份检查报告",
+      hasIcon: true,
+      onClick: () => {
+        setInput("请用通俗语言解释这份检查报告");
+        fileRef.current?.click();
+      },
+    },
+    {
+      text: "帮我梳理复诊前需要关注的三个重点",
+      hasIcon: false,
+      onClick: () => handleQuickPrompt("帮我梳理复诊前需要关注的三个重点"),
+    },
+    {
+      text: "根据目前情况给我一周的健康管理建议",
+      hasIcon: false,
+      onClick: () => handleQuickPrompt("根据目前情况给我一周的健康管理建议"),
+    },
+  ];
+
   return (
-    <div className="h-screen flex relative overflow-hidden">
+    <div className="h-screen flex flex-col relative overflow-hidden">
+      <style>{`
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+      `}</style>
       {/* Background */}
       <div className="fixed inset-0 -z-10">
-        <div className="absolute top-[-15%] left-[-5%] w-[400px] h-[400px] rounded-full bg-primary/[0.08] blur-[100px]" />
-        <div className="absolute bottom-[-10%] right-[-5%] w-[350px] h-[350px] rounded-full bg-accent/[0.08] blur-[100px]" />
+        <motion.div
+          className="absolute top-[-30%] left-[-15%] w-[760px] h-[760px] rounded-full bg-primary/[0.24] blur-[220px]"
+          initial={{ scale: 0.95, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.98, opacity: 0 }}
+          transition={{ duration: 1.8, ease: [0.22, 1, 0.36, 1] }}
+        />
+        <motion.div
+          className="absolute bottom-[-30%] right-[-15%] w-[740px] h-[740px] rounded-full bg-accent/[0.24] blur-[220px]"
+          initial={{ scale: 0.95, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.98, opacity: 0 }}
+          transition={{ duration: 1.8, ease: [0.22, 1, 0.36, 1], delay: 0.12 }}
+        />
       </div>
 
-      {/* Sidebar overlay */}
-      <AnimatePresence>
-        {sidebarOpen && (
-          <motion.div
-            className="fixed inset-0 bg-foreground/20 backdrop-blur-sm z-40 md:hidden"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setSidebarOpen(false)}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Sidebar */}
-      <AnimatePresence>
-        {sidebarOpen && (
-          <motion.aside
-            className="fixed md:relative z-50 top-0 left-0 h-full w-72 glass-card rounded-none border-r flex flex-col"
-            initial={{ x: -288 }}
-            animate={{ x: 0 }}
-            exit={{ x: -288 }}
-            transition={{ type: "spring", damping: 25, stiffness: 300 }}
-          >
-            <div className="p-4 flex items-center justify-between border-b border-border/50">
-              <span className="font-semibold text-sm">历史会话</span>
-              <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(false)} className="rounded-xl">
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-            <ScrollArea className="flex-1 p-3">
-              <Button variant="ghost" className="w-full justify-start gap-2 mb-2 rounded-xl text-sm">
-                <Plus className="w-4 h-4" /> 新会话
-              </Button>
-              {sessions.map((s) => (
-                <button
-                  key={s.id}
-                  className="w-full text-left p-3 rounded-xl hover:bg-muted/60 transition-colors mb-1"
-                >
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="w-4 h-4 text-muted-foreground shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{s.title}</p>
-                      <p className="text-xs text-muted-foreground truncate">{s.lastMessage}</p>
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </ScrollArea>
-          </motion.aside>
-        )}
-      </AnimatePresence>
-
-      {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* Main layout */}
+      <div className="flex flex-col h-full">
         {/* Top bar */}
-        <header className="glass-nav px-4 h-14 flex items-center gap-3 shrink-0">
-          <Button variant="ghost" size="icon" className="rounded-xl" onClick={() => setSidebarOpen(!sidebarOpen)}>
-            <Menu className="w-5 h-5" />
-          </Button>
-          <Link to="/" className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg gradient-bg flex items-center justify-center">
-              <Sparkles className="w-3.5 h-3.5 text-primary-foreground" />
-            </div>
-            <span className="font-semibold text-sm">MedInsight</span>
+          <header className="px-4 h-16 flex items-center shrink-0 flex-shrink-0">
+          <Link to="/">
+            <motion.div
+              className="flex items-center gap-2"
+              initial={{ opacity: 0, x: 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.45 }}
+            >
+              <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center bg-white/0">
+                <img src="/logo.png" alt="Medora" className="w-8 h-8 object-cover" onError={(e:any) => (e.target.src = '/placeholder.svg')} />
+              </div>
+              <span className="font-semibold text-lg" style={{ color: '#0e0b40ff'}}>Medora</span>
+            </motion.div>
           </Link>
         </header>
 
-        {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-          <div className="max-w-4xl mx-auto space-y-4">
-          {messages.map((msg, idx) => (
-            <motion.div
-              key={msg.id}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3 }}
-            >
-              {msg.role === "user" ? (
-                <div className="max-w-[85%] md:max-w-[70%] space-y-2">
-                  {msg.imageUrl && (
-                    <div className="rounded-2xl overflow-hidden border border-border/50 glass-card">
-                      <img src={msg.imageUrl} alt="上传的图片" className="max-h-64 object-contain w-full" />
+        {/* Main content with sidebar buttons */}
+        <div className="flex-1 flex min-h-0 relative">
+          {/* Left sidebar buttons - iOS 26 glass style */}
+          {!sidebarOpen && (
+            <div className="pl-2 pr-2 py-2 flex flex-col gap-2 absolute top-0 left-0">
+              <button
+                onClick={() => {
+                  setSidebarOpen((prev) => {
+                    const next = !prev;
+                    if (next) setCalendarOpen(false);
+                    return next;
+                  });
+                }}
+                className="w-12 h-12 rounded-full flex items-center justify-center transition-all backdrop-blur-md bg-white/30 text-muted-foreground hover:text-foreground hover:bg-white/50 border border-white/20 shadow-sm"
+                title="咨询历史"
+                style={{
+                  boxShadow: '0 2px 8px rgba(255,255,255,0.3), inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(255,255,255,0.2)'
+                }}
+              >
+                <MessageSquare className="w-5 h-5" />
+              </button>
+              {!calendarOpen && (
+                <button
+                  onClick={() => {
+                    setCalendarOpen(true);
+                    setSidebarOpen(false);
+                  }}
+                  className="w-12 h-12 rounded-full flex items-center justify-center transition-all backdrop-blur-md bg-white/30 text-muted-foreground hover:text-foreground hover:bg-white/50 border border-white/20 shadow-sm"
+                  title="健康日历"
+                  style={{
+                    boxShadow: '0 2px 8px rgba(255,255,255,0.3), inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(255,255,255,0.2)'
+                  }}
+                >
+                  <Calendar className="w-5 h-5" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* History sidebar - expanded from icon position */}
+          <AnimatePresence>
+            {sidebarOpen && (
+              <motion.div
+                className="absolute"
+                style={{ left: 8, top: 8 }}
+                initial={{ width: 48, height: 48, opacity: 0 }}
+                animate={sidebarPreview ? { width: 280, height: 48, opacity: 1 } : { width: 280, height: 'calc(100% - 16px)', opacity: 1 }}
+                exit={{ width: 48, height: 48, opacity: 0 }}
+                transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              >
+                <div 
+                  className={sidebarPreview ? "rounded-2xl overflow-hidden flex" : "h-full rounded-2xl overflow-hidden flex flex-col"}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.35)',
+                    backdropFilter: 'blur(20px)',
+                    border: '2px solid rgba(255, 255, 255, 0.4)',
+                    boxShadow: '0 8px 32px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)'
+                  }}
+                >
+                  {/* Header */}
+                  <div className="flex items-center justify-between p-3">
+                    <button 
+                      onClick={() => setSidebarOpen(false)}
+                      className="flex items-center gap-2 text-foreground hover:opacity-80 transition-opacity"
+                    >
+                      <MessageSquare className="w-5 h-5" />
+                      <span className="font-medium text-sm">咨询历史</span>
+                    </button>
+                  </div>
+                  {/* Content: preview 时不渲染 */}
+                  {!sidebarPreview && (
+                    <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                      <Button variant="ghost" className="w-full justify-start gap-3 mb-2 rounded-xl text-sm h-10 hover:bg-white/50 text-foreground hover:text-foreground">
+                        <Plus className="w-5 h-5" /> 新会话
+                      </Button>
+                      {sessions.map((s) => (
+                        <button
+                          key={s.id}
+                          className="w-full text-left p-3 rounded-xl hover:bg-white/30 transition-colors mb-1"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{s.title}</p>
+                            <p className="text-xs text-muted-foreground truncate">{s.lastMessage}</p>
+                          </div>
+                        </button>
+                      ))}
                     </div>
                   )}
-                  <div className="gradient-bg text-primary-foreground p-4 rounded-2xl rounded-br-md shadow-[0_10px_24px_hsla(var(--gradient-start)/0.28)]">
-                    <p className="text-sm leading-relaxed">{msg.content}</p>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground text-right pr-1">
-                    {formatTime(msg.timestamp)}
-                  </p>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  <AssistantBubble
-                    content={msg.content}
-                    isLatest={idx === messages.length - 1}
-                  />
-                  {msg.stages && msg.stages.length > 0 && (
-                    <details className="pl-1">
-                      <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
-                        查看阶段详情
-                      </summary>
-                      <div className="space-y-2 mt-2">
-                        {msg.stages.map((stage) => (
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Calendar sidebar - expanded below history sidebar */}
+          <AnimatePresence>
+            {calendarOpen && (
+              <motion.div
+                className="absolute"
+                style={{ left: 8, top: 64 }}
+                initial={{ width: 48, height: 48, opacity: 0 }}
+                animate={calendarPreview ? { width: 280, height: 48, opacity: 1 } : { width: 280, height: 394, opacity: 1 }}
+                exit={{ width: 48, height: 48, opacity: 0 }}
+                transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              >
+                <div 
+                  className={calendarPreview ? "rounded-2xl overflow-hidden flex" : "h-full rounded-2xl overflow-hidden flex flex-col"}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.35)',
+                    backdropFilter: 'blur(20px)',
+                    border: '2px solid rgba(255, 255, 255, 0.4)',
+                    boxShadow: '0 8px 32px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)'
+                  }}
+                >
+                  {/* Header */}
+                  <div className="flex items-center justify-between p-3 pl-2">
+                    <button 
+                      onClick={() => setCalendarOpen(false)}
+                      className="flex items-center gap-2 text-foreground hover:opacity-80 transition-opacity"
+                    >
+                      <Calendar className="w-5 h-5" />
+                      <span className="font-medium text-sm">健康日历</span>
+                    </button>
+                  </div>
+                  {/* Content: preview 时不渲染 */}
+                  {!calendarPreview && (
+                    <div className="flex-1 flex flex-col p-2">
+                      <div className="mb-2">
+                        <div className="relative inline-flex items-center justify-center gap-1">
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() => { setYearSelectorOpen((s) => !s); setMonthSelectorOpen(false); }}
+                              className="px-2 py-1 rounded-xl bg-transparent hover:bg-white/5 transition-colors focus:outline-none ml-[4px]"
+                            >
+                              <span className="text-sm font-medium">{displayYear}</span>
+                            </button>
+                            {yearSelectorOpen && (
+                                <div className="absolute left-0 top-full mt-2 z-50 w-24 max-h-40 overflow-y-auto no-scrollbar p-1 rounded-xl bg-white shadow-lg">
+                                  {Array.from({ length: 11 }).map((_, i) => {
+                                    const y = displayYear - 5 + i;
+                                    const isFirst = i === 0;
+                                    const isLast = i === 10;
+                                    return (
+                                      <button
+                                        key={y}
+                                        type="button"
+                                        onClick={() => { setDisplayYear(y); setYearSelectorOpen(false); }}
+                                        className={`w-full text-center py-2 hover:bg-primary/10 ${y === displayYear ? 'font-semibold' : ''} ${isFirst ? 'rounded-t-xl' : ''} ${isLast ? 'rounded-b-xl' : ''}`}
+                                      >
+                                        {y}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                          </div>
+
+                          <span className="text-sm">年</span>
+
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() => { setMonthSelectorOpen((s) => !s); setYearSelectorOpen(false); }}
+                              className="px-2 py-1 rounded-xl bg-transparent hover:bg-white/5 transition-colors focus:outline-none ml-[2px]"
+                            >
+                              <span className="text-sm font-medium">{displayMonth + 1}</span>
+                            </button>
+                            {monthSelectorOpen && (
+                                <div className="absolute left-0 top-full mt-2 z-50 w-20 max-h-40 overflow-y-auto no-scrollbar p-1 rounded-xl bg-white shadow-lg">
+                                  {Array.from({ length: 12 }).map((_, i) => {
+                                    const m = i;
+                                    const isFirst = i === 0;
+                                    const isLast = i === 11;
+                                    return (
+                                      <button
+                                        key={m}
+                                        type="button"
+                                        onClick={() => { setDisplayMonth(m); setMonthSelectorOpen(false); }}
+                                        className={`w-full text-center py-2 hover:bg-primary/10 ${m === displayMonth ? 'font-semibold' : ''} ${isFirst ? 'rounded-t-xl' : ''} ${isLast ? 'rounded-b-xl' : ''}`}
+                                      >
+                                        {m + 1}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                          </div>
+                          <span className="text-sm">月</span>
+                        </div>
+                      </div>
+
+                      <div className="overflow-y-auto no-scrollbar space-y-2" style={{ maxHeight: '252px' }}>
+                        {mockCalendarEvents.map((event) => (
                           <div
-                            key={`${msg.id}-${stage.key}`}
-                            className={`rounded-xl border p-3 ${STAGE_CLASS[stage.key] || "border-muted bg-muted/50"}`}
+                            key={event.id}
+                            className={`p-3 rounded-xl border-l-3 ${
+                              event.type === "medication"
+                                ? "border-blue-500 bg-blue-50/60"
+                                : event.type === "appointment"
+                                  ? "border-red-500 bg-red-50/60"
+                                  : "border-amber-500 bg-amber-50/60"
+                            }`}
                           >
-                            <p className="text-xs font-semibold text-foreground/80">
-                              {stage.label}
-                            </p>
-                            <p className="text-xs text-muted-foreground mt-1 max-h-24 overflow-auto">
-                              {stage.content || "无阶段输出"}
-                            </p>
+                            <div className="flex items-start justify-between">
+                              <div>
+                                <p className="text-sm font-medium">{event.title}</p>
+                                <p className="text-xs text-muted-foreground mt-0.5">{event.description}</p>
+                              </div>
+                              <span className="text-xs text-muted-foreground">
+                                {event.date.getMonth() + 1}/{event.date.getDate()}
+                              </span>
+                            </div>
                           </div>
                         ))}
                       </div>
-                    </details>
-                  )}
-                  <p className="text-[11px] text-muted-foreground pl-1">
-                    {formatTime(msg.timestamp)}
-                  </p>
-                </div>
-              )}
-            </motion.div>
-          ))}
 
-          {messages.length === 1 && (
-            <motion.div
-              className="flex justify-start"
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
-              <div className="glass-card p-3 rounded-2xl max-w-[92%] md:max-w-[75%]">
-                <p className="text-xs text-muted-foreground mb-2">你可以这样开始：</p>
-                <div className="flex flex-wrap gap-2">
-                  {QUICK_PROMPTS.map((prompt) => (
-                    <button
-                      key={prompt}
-                      type="button"
-                      className="text-xs px-3 py-1.5 rounded-full bg-muted/70 hover:bg-muted transition-colors"
-                      onClick={() => handleQuickPrompt(prompt)}
+                      {/* Legend */}
+                      <div className="mt-4 border-t border-white/20">
+                        <div className="flex items-center justify-start w-full gap-4 pl-3 text-xs text-muted-foreground">
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-blue-500" />
+                            <span>用药</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-red-500" />
+                            <span>就诊</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-amber-500" />
+                            <span>复查</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+      {/* Main chat area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Messages */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
+          <div className="max-w-4xl mx-auto flex flex-col min-h-full">
+          {messages.map((msg, idx) => {
+            const isSingleLine =
+              typeof msg.content === "string" && !msg.content.includes("\n") && msg.content.length <= 60;
+            return (
+              <motion.div
+                key={msg.id}
+                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} mb-4`}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
+              >
+                {msg.role === "user" ? (
+                  <div className="max-w-[85%] md:max-w-[70%] space-y-2">
+                    {msg.imageUrl && (
+                      <div className="rounded-2xl overflow-hidden border border-border/50 glass-card">
+                        <img src={msg.imageUrl} alt="上传的图片" className="max-h-64 object-contain w-full" />
+                      </div>
+                    )}
+                    <div
+                      className="gradient-bg text-primary-foreground p-4 rounded-2xl rounded-br-md"
+                      style={{
+                        background: 'rgba(99, 102, 241, 0.8)',
+                        backdropFilter: 'blur(20px)',
+                        WebkitBackdropFilter: 'blur(20px)',
+                        // border: '2px solid rgba(165,180,252, 0.8)',
+                        // boxShadow: '0 4px 16px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -1px 0 rgba(99, 102, 241, 0.2)',
+                        color: 'rgba(255, 255, 255, 1)',
+                        borderRadius: isSingleLine ? '9999px' : '20px',
+                        whiteSpace: isSingleLine ? 'nowrap' : 'normal',
+                        overflow: isSingleLine ? 'hidden' : 'visible',
+                        textOverflow: isSingleLine ? 'ellipsis' : 'clip',
+                        height: isSingleLine ? '46px' : undefined,
+                        display: isSingleLine ? 'flex' : undefined,
+                        alignItems: isSingleLine ? 'center' : undefined,
+                        padding: isSingleLine ? '0 16px' : undefined
+                      }}
                     >
-                      {prompt}
+                      <p className="text-sm leading-relaxed ">{msg.content}</p>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground text-right pr-1">
+                      {formatTime(msg.timestamp)}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <AssistantBubble
+                      content={msg.content}
+                      isLatest={idx === messages.length - 1}
+                    />
+                    {msg.stages && msg.stages.length > 0 && (
+                      <details className="pl-1">
+                        <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
+                          查看阶段详情
+                        </summary>
+                        <div className="space-y-2 mt-2">
+                          {msg.stages.map((stage) => {
+                            const isCurrentStage = stage.status === "running";
+                            return (
+                              <div
+                                key={`${msg.id}-${stage.key}`}
+                                className={`rounded-xl p-3 ${STAGE_CLASS[stage.key] || "bg-muted/50"}`}
+                                style={{
+                                  backdropFilter: 'blur(20px)',
+                                  WebkitBackdropFilter: 'blur(20px)',
+                                  background: 'rgba(255, 255, 255, 0.6)',
+                                  boxShadow: '0 8px 24px rgba(255, 255, 255, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.36)',
+                                  opacity: isCurrentStage ? 1 : 0.5,
+                                }}
+                              >
+                                <p className="text-xs font-semibold" style={{ color: '#0e0b40ff' }}>{stage.label}</p>
+                                <p className="text-xs mt-1 max-h-24 overflow-auto" style={{ color: '#0e0b40ff' }}>{stage.content || "无阶段输出"}</p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
+              </motion.div>
+            );
+          })}
+
+          {messages.length === 0 && (
+            <motion.div
+              className="flex justify-center mt-auto"
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <div className="p-6 rounded-3xl max-w-4xl mx-auto">
+                <div className="mt-4 text-3xl font-extrabold text-foreground/90 leading-relaxed"  style={{ color: '#0e0b40ff'}}>
+                  今天需要 Medora 做点什么？
+                </div>
+                <div className="mt-2 text-muted-foreground leading-relaxed">
+                  我可以帮您解读病历、分析影像，并生成随访建议；也可以结合您的历史情况提供个性化的健康评估与管理方案。
+                </div>
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  {EMPTY_TASKS.map((task) => (
+                    <button
+                      key={task.text}
+                      type="button"
+                      className="text-left p-4 rounded-2xl border border-border/60 bg-white/60 hover:bg-white/80 transition-colors flex items-center gap-2"
+                      onClick={task.onClick}
+                    >
+                      {task.hasIcon && <Paperclip className="w-4 h-4 text-muted-foreground" />}
+                      <span className="text-sm">{task.text}</span>
                     </button>
                   ))}
                 </div>
@@ -473,7 +787,13 @@ const Chat = () => {
 
           {isLoading && (
             <motion.div className="flex justify-start" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-              <div className="glass-card p-4 min-w-[340px]">
+              <div
+                className="p-4 min-w-[340px] rounded-2xl"
+                style={{
+                  backdropFilter: 'blur(20px)',
+                  WebkitBackdropFilter: 'blur(20px)'
+                }}
+              >
                 <div className="flex items-center gap-2">
                   <div className="flex gap-1">
                     {[0, 1, 2].map((i) => (
@@ -505,6 +825,7 @@ const Chat = () => {
                                   ? "bg-emerald-500 border-emerald-500"
                                   : "bg-background/80 border-border",
                             ].join(" ")}
+                            style={{ opacity: isCurrent ? 1 : 0.5 }}
                           />
                           {!isLast && (
                             <span
@@ -515,15 +836,16 @@ const Chat = () => {
                             />
                           )}
                         </div>
-                        <div
-                          className={[
-                            "text-xs px-2 py-1 rounded-md border transition-colors",
-                            STAGE_CLASS[stage.key] || "border-muted bg-muted/50",
-                            isCurrent ? "text-foreground font-medium" : "text-muted-foreground",
-                          ].join(" ")}
-                        >
-                          {stage.label}
-                        </div>
+                            <div
+                              className={[
+                                "text-xs px-2 py-1 rounded-md transition-colors",
+                                STAGE_CLASS[stage.key] || "bg-muted/50",
+                                isCurrent ? "font-normal" : "font-light",
+                              ].join(" ")}
+                              style={{ color: '#0e0b40ff', opacity: isCurrent ? 1 : 0.5}}
+                            >
+                              {stage.label}
+                            </div>
                       </div>
                     );
                   })}
@@ -534,28 +856,34 @@ const Chat = () => {
           </div>
         </div>
 
-        {/* Image preview */}
+        {/* Image preview (aligned with input, delete button shows on hover) */}
         <AnimatePresence>
           {previewImage && (
             <motion.div
-              className="px-4 pb-2"
+              className="max-w-4xl mx-auto px-4 w-full "
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: "auto", opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
             >
-              <div className="glass-card p-2 inline-flex items-center gap-2 rounded-xl">
-                <img src={previewImage} alt="预览" className="h-16 rounded-lg object-cover" />
+            <div
+              className="p-2 pb-0 relative inline-flex items-center gap-2 rounded-xl group ml-[44px]"
+              style={{
+                backdropFilter: 'blur(20px)',
+                WebkitBackdropFilter: 'blur(20px)',
+              }}
+            >
+                <img src={previewImage} alt="预览" className="h-20 object-cover rounded-sm" />
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="rounded-lg h-8 w-8"
+                  className="rounded-lg h-8 w-8 absolute right-3 top-3 opacity-0 group-hover:opacity-100 transition-opacity bg-white/50 hover:bg-white transition-colors"
                   onClick={() => {
                     setPreviewImage(null);
                     setSelectedImageFile(null);
                     if (fileRef.current) fileRef.current.value = "";
                   }}
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-4 h-4 text-black" />
                 </Button>
               </div>
             </motion.div>
@@ -564,38 +892,67 @@ const Chat = () => {
 
         {/* Input */}
         <div className="p-4 shrink-0">
-          <div className="glass-card p-3 flex items-end gap-2 max-w-3xl mx-auto border-white/45 shadow-[0_10px_40px_hsla(var(--glass-shadow))]">
-            <input type="file" ref={fileRef} className="hidden" accept="image/*" onChange={handleFile} />
-            <Button
-              variant="ghost"
-              size="icon"
-              className="rounded-xl shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={() => fileRef.current?.click()}
+          <div className="flex items-end gap-2 max-w-4xl mx-auto">
+            <div className="flex justify-center h-[46px]">
+              <Button
+                size="icon"
+                className="rounded-full shrink-0 border-0 transition-all hover:shadow-md w-9 h-9"
+                style={{
+                  background: 'rgba(255, 255, 255, 0.8)',
+                  backdropFilter: 'blur(20px)',
+                  border: '2px solid rgba(255, 255, 255, 0.9)',
+                  boxShadow: '0 4px 16px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)'
+                }}
+                onClick={() => fileRef.current?.click()}
+              >
+                <Paperclip className="w-4 h-4" style={{ color: 'rgb(99, 102, 241)' }} />
+              </Button>
+            </div>
+            <div 
+              className="flex-1 p-2 rounded-[36px] min-w-0"
+              style={{
+                background: 'rgba(255, 255, 255, 0.35)',
+                backdropFilter: 'blur(20px)',
+                border: '2px solid rgba(255, 255, 255, 0.4)',
+                boxShadow: '0 8px 32px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)'
+              }}
             >
-              <Paperclip className="w-5 h-5" />
-            </Button>
-            <Textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="输入您的问题，或上传病历/影像..."
-              className="min-h-[44px] max-h-32 resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm leading-relaxed"
-              rows={1}
-            />
-            <Button
-              size="icon"
-              className="gradient-bg text-primary-foreground rounded-xl shrink-0 border-0 hover:opacity-90 transition-opacity"
-              onClick={handleSend}
-              disabled={isLoading || (!input.trim() && !previewImage)}
-            >
-              <Send className="w-4 h-4" />
-            </Button>
+              <input type="file" ref={fileRef} className="hidden" accept="image/*" onChange={handleFile} />
+              <Textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="输入您的问题，或上传病历/影像..."
+                className="w-full min-h-[36px] max-h-24 resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-foreground placeholder:text-muted-foreground py-2"
+                style={{fieldSizing: 'content' as any }}
+              />
+            </div>
+            <div className="flex justify-center h-[46px]">
+              <Button
+                size="icon"
+                className="rounded-full shrink-0 border-0 transition-all hover:shadow-md w-9 h-9"
+                style={{
+                  background: 'rgba(99, 102, 241, 0.8)',
+                  backdropFilter: 'blur(20px)',
+                  border: '2px solid rgba(165,180,252, 0.8)',
+                  boxShadow: '0 4px 16px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -1px 0 rgba(99, 102, 241, 0.2)'
+                }}
+                onClick={handleSend}
+                disabled={isLoading || (!input.trim() && !previewImage)}
+              >
+                <Send className="w-4 h-4 text-primary-foreground" />
+              </Button>
+            </div>
           </div>
           <p className="text-xs text-muted-foreground text-center mt-2">
             仅供参考，不构成医疗诊断建议
           </p>
         </div>
       </div>
+    </div>
+    {/* Close flex-col main layout */}
+    </div>
+    {/* Close outer container */}
     </div>
   );
 };

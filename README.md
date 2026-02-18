@@ -1,102 +1,85 @@
-## 背景
+<div align="center">
+    <p>
+      <img src="logo1.png" alt="Medora" width="640" />
+    </p>
+    <p style="font-size: 24px; font-weight: bold; margin-bottom: 0px;">Medora：医疗解析与疾病管理智能体</p>
+    <p style="font-size: 16px; font-weight: normal; color: #666; margin-top: 0; margin-bottom: 6px;">面向慢病患者的就诊后阶段医学信息理解与长期疾病管理助手</p>
+    <hr>
+    <p style="display: flex; gap: 12px; justify-content: center;">
+        <img src="https://img.shields.io/badge/python-≥3.11-blue?logo=python&logoColor=white" alt="Python">
+        <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+        <img src="https://img.shields.io/badge/LangGraph-1.0+-purple?style=flat&logo=langgraph&logoColor=white" alt="LangGraph">
+    </p>
+</div>
 
-近年来，慢性病已成为全球公共卫生的主要负担，非传染性慢性疾病约占全球死亡人数的 74%。针对慢性病患者的健康素养研究表明，仅约 21.6% 的患者具备充分的健康素养，而健康素养不足与药物理解准确性显著相关，这直接影响患者对病历和用药指示的理解和执行效果。此外，临床沟通研究指出，患者离开诊室后常无法准确回忆医生解释的内容，对健康行为形成负面影响。在市场规模方面，全球慢性病管理市场预计将从约 60 亿美元增长至逾 170 亿美元，显示出慢性病管理领域需求的持续扩大。
+## 📊 背景
 
-## 产品定位
+近年来，慢性病已成为全球公共卫生的主要负担，非传染性慢性疾病约占全球死亡人数的 74%。慢性病患者通常需要长期随访管理，包括反复检查、持续用药以及跨时间段的健康监测，因而往往积累大量分散的医疗记录，需要进行持续的对比分析。然而，针对慢性病患者的健康素养研究表明，仅约 21.6% 的患者具备充分的健康素养，而这与药物理解准确性显著相关，直接影响患者对医疗资料的理解、依从性和执行效果。在市场规模方面，全球慢性病管理市场预计将从约 60 亿美元增长至逾 170 亿美元，同样显示出慢性病管理领域需求的持续扩大。
 
-本项目构建了一个面向患者的医疗解析与疾病管理智能体，解决用户在就诊后阶段遇到的医学信息理解困难与长期疾病管理问题。
+## 🏗️ 系统架构
 
-## 用户画像
+<p align="center">
+  <img src="arch.png" alt="nanobot architecture" width="800">
+</p>
 
-### 核心用户
+## ✨ 核心亮点
 
-慢性病或长期随访患者，典型特征包括：
- 
-- 需要长期反复检查与持续用药  
-- 拥有多份病历、检查报告或影像说明  
-- 缺乏医学背景，难以理解专业医疗文本  
-- 需要对比不同时间段的病情变化
+- **医学意图路由 + 多轮智能体编排**：`Supervisor` 先用 LLM + 规则识别“医学 / 非医学”意图，非医学问题直接由 LLM 友好回复；医学问题则进入 `Planner → Tooler → Searcher → Reflector → Summarize` 的多阶段流水线，避免“所有问题一股脑走重流程”。
+- **文本 + PDF + 影像的多模态解析**：支持纯文本病历、PDF 报告以及影像截图三类输入；PDF 通过 `parse_pdf` 提取文字与内嵌图片，影像再经 MedGemma 风格的多模态模型（`medgemma_analyze_image`）结合临床上下文统一分析。
+- **检索增强医学知识补充**：`web_search` 基于 Tavily 医学检索，`rag_search` 通过 Chroma 本地知识库查询；在 `Tooler` / `Searcher` 中分别做“在线 + 本地”双通道检索，再由 LLM 汇总为可读的医学背景说明。
+- **规划—反思闭环的疾病管理计划**：`Planner` 先根据原始文本生成初始 TODO 方案，再结合解析结果与检索信息更新计划；`Reflector` 对“解析 + 检索 + 计划”整体做一致性与安全性反思，最终由 `Summarizer` 产出面向患者的口语化总结与长期管理建议。
 
-| 用户特征 | 描述 |
-|--------|------|
-| 健康信息复杂 | 多病共存、长期用药、指标众多 |
-| 医疗文档繁杂 | 多次病历、检查报告、影像记录 |
-| 信息理解门槛高 | 医学术语多、解释不足 |
-| 管理周期长 | 需要长期记录、对比与提醒 |
+## ⚙️ 功能
 
-### 次级用户
+用户在就诊后上传病历文本、检查报告或影像说明，系统利用 MedGemma 模型进行医学语义解析，提取诊断、用药、关键指标等核心信息并生成结构化摘要，为患者提供可读性高的解析文本。同时结合 Web Search 补充医学术语说明与相关背景知识，在不进行诊断替代的前提下增强理解。解析结果将被持续存储，用于后续对比病情变化与长期健康管理，并根据用药信息生成提醒和随访提示，从而支持患者在治疗与康复阶段的持续执行与自我管理。
 
-- 陪诊者（如家属、护工）
-- 长期健康管理需求人群
+## 🧭 核心功能实现思路
 
----
+1) 智能体编排与状态流
+- 图编排：基于 LangGraph，构建 `supervisor → planner → {tooler, searcher, reflector} → summarize` 的有向图；`tooler/searcher/reflector` 完成一次后会回到 `planner`，由规划节点决定是否继续迭代还是进入总结阶段。
+- 状态建模：`MedAgentState`记录整个对话过程中的 `raw_text / images / merged_analysis / search_results / plan / reflection / summary` 等字段，所有节点都在同一状态上增量更新。
+- 入口路由：`Supervisor` 结合 `_classify_query_intent` 的 LLM 结果和关键字规则判断是否为医学相关；若为非医学问候，则直接生成一条自然回复并终结图；若为医学问题，则初始化 `plan` 与工具状态后跳转到 `Planner`。
 
-## 痛点
+2) 解析与检索工具层
+- 文本 & 影像解析：`Tooler` 调用 `medgemma_analyze_text` 和 `medgemma_analyze_image`，前者用大模型结构化抽取诊断、检查与用药要点，后者对影像进行医学解读；当既有文本又有影像时，再通过 `MERGE_PROMPT` 由 LLM 将两路结果合并为统一医学分析。
+- PDF 处理：若用户上传 PDF，`run_multi_agent` 会先使用 `parse_pdf`抽取全文文本与所有页内嵌图片，将文本拼接入 `raw_text`，图片转为 base64 进入图像分析分支，实现“一次上传 = 文本 + 影像全量解析”。
+- 检索增强：`web_search` 封装 Tavily API，面向“医学 xxx”查询返回精简网页片段；`rag_search` 连接 Chroma 本地 collection `medical_knowledge`，按主题抽取 topK 段落。`Tooler` 和 `Searcher` 节点会把两路结果拼接，再交给 LLM 用 `SEARCH_SUMMARY_PROMPT` 做二次总结，输出给后续规划与反思使用。
 
-### 1. 医疗文本不可读
+3) 规划、反思与总结
+- 规划器（Planner）：在首次进入时基于 `raw_text` 调用 `PLAN_INIT_PROMPT` 生成一版基础 TODO 样式的长期管理计划；在拿到 `merged_analysis + search_results` 后，用 `PLAN_PROMPT` 生成“解析 + 检索驱动”的升级版方案，并在 state 中标记 `plan_updated`。
+- 反思器（Reflector）：`Reflector` 根据 `REFLECT_PROMPT` 对当前解析、检索与计划进行一致性、安全性和可执行性审查；若模型不可用，则返回“质检暂不可用”一类的软降级提示，主流程不被阻塞。
+- 总结器（Summarizer）：对医学问题使用 `SUMMARIZE_PROMPT`，将“解析 + 检索 + 计划 + 反思”融合为患者可读的中文说明和执行要点；对非医学小聊，则用 `NON_MEDICAL_REPLY_PROMPT` 提供简单陪伴式回答。
 
-- 病历、检查单和影像报告充斥医学术语与缩写  
-- 普通患者难以直接理解其含义
+4) 运行时与数据落盘
+- 运行进度管理：`runtime/progress.py` 对每次调用生成默认六阶段的时间线，并在 `begin_run / mark_stage / complete_run / fail_run` 时通过内存结构与 SSE 广播更新，前端直接订阅 `/api/multi-agent/events/{run_id}` 即可获得“阶段状态 + 内容快照”。
+- 患者与随访数据：`utils/db.py` 使用 `aiosqlite` 初始化 `patients / medical_records / follow_up_plans` 三张表，分别存储患者基本信息、结构化病历记录及随访计划内容，为后续扩展“长期随访页面 / 患者故事时间线”等功能预留基础数据层。
 
-### 2. 医疗信息高度碎片化
+## 📁 项目结构
 
-- 病历分散在不同时间、不同医院和系统  
-- 难以进行长期对比与整体回顾
-
-### 3. 就诊后阶段缺乏支持
-
-- 就诊交流时间有限  
-- 回家后对病历内容、医嘱细节记忆模糊  
-
-### 4. 执行与管理困难
-
-- 因理解不足导致用药或复诊执行不稳定  
-- 无法形成清晰、连续的个人健康记录
-
----
-
-## 需求分析
-
-| 需求类型 | 具体需求 |
-|--------|----------|
-| 信息理解 | 将专业医学文本转化为通俗易懂的内容 |
-| 信息结构化 | 提取诊断、症状、用药、风险等关键字段 |
-| 历史对比 | 支持多次就诊记录的纵向比较 |
-| 长期记忆 | 将关键信息长期存储、可随时回顾 |
-| 行动支持 | 提供用药与复诊等提醒机制 |
-
----
-
-## 功能与使用场景
-
-### 1️ 病历与影像解析
-
-用户上传病历或影像报告：
-
-- 利用 MedGemma 进行医学语义理解  
-- 提取诊断、用药、关键指标等信息
-- 生成结构化摘要与可读解释
-
-**适用场景：**
-
-- 门诊或住院病历解读  
-- 出院记录回顾  
-- 检查报告理解
-
----
-
-### 2️ 医学知识补充
-
-结合 Web Search 能力：
-
-- 对医学术语提供权威解释  
-- 补充与病历相关的医学背景信息  
-- 在不越界诊断的前提下增强患者理解
-
----
-
-### 3 用药提醒与长期管理辅助
-
-- 生成用药提醒  
-- 提示复诊或随访时间  
-
+```
+medgemma_afu/
+├── api/                   # 后端API服务
+│   ├── main.py            # FastAPI主入口
+│   └── schemas.py         # 数据模型定义
+├── src/                   # 核心业务逻辑
+│   ├── agents/            # 智能体实现
+│   ├── graph/             # 工作流编排
+│   │   ├── builder.py     # 图构建器
+│   │   ├── nodes.py       # 节点定义
+│   │   └── state.py       # 状态管理
+│   ├── llm/               # LLM集成
+│   ├── prompts/           # 提示词模板
+│   ├── runtime/           # 运行时工具
+│   ├── tool/              # 工具集合
+│   └── utils/             # 工具函数
+├── frontend/              # 前端应用
+│   ├── src/
+│   │   ├── components/    # UI组件
+│   │   ├── pages/         # 页面组件
+│   │   └── lib/           # 工具库
+│   └── package.json       # 前端依赖
+├── data/                  # 数据存储
+│   ├── chroma/            # 向量数据库
+│   └── patients.db        # 患者数据库
+└── requirements.txt       # Python依赖
+```
