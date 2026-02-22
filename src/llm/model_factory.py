@@ -12,42 +12,6 @@ from src.config.settings import settings
 _logger = get_logger(__name__)
 
 
-def _normalize_model_name(model: str) -> str:
-    return (model or "").strip().lower()
-
-
-def _has_openai_creds(agent_key: str) -> bool:
-    return settings.has_openai_like_creds(agent_key)
-
-
-def _err_text(exc: Exception) -> str:
-    msg = str(exc).strip()
-    return msg if msg else exc.__class__.__name__
-
-
-async def safe_llm_call(llm: Any, prompt: str, stage: str) -> str:
-    """Call llm and keep retrying on timeout-like transient errors."""
-    while True:
-        try:
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
-            return str(response.content)
-        except Exception as exc:
-            name = exc.__class__.__name__.lower()
-            msg = str(exc).lower()
-            is_timeout_like = (
-                isinstance(exc, TimeoutError)
-                or isinstance(exc, asyncio.TimeoutError)
-                or "timeout" in name
-                or "timeout" in msg
-                or "timed out" in msg
-            )
-            if is_timeout_like:
-                _logger.warning("[%s] transient call error, retrying: %s", stage, _err_text(exc))
-                await asyncio.sleep(1.0)
-                continue
-            raise
-
-
 class BaseModelProvider(ABC):
     """Abstract provider contract for chat model creation."""
 
@@ -72,7 +36,7 @@ class OpenAIProvider(BaseModelProvider):
     name = "openai"
 
     def is_available(self, agent_key: str, model: str) -> bool:
-        return _has_openai_creds(agent_key)
+        return settings.has_openai_like_creds(agent_key)
 
     def create(
         self,
@@ -112,10 +76,10 @@ class OllamaProvider(BaseModelProvider):
             return False
 
         names = {
-            _normalize_model_name(item.get("name", ""))
+            (item.get("name", "") or "").strip().lower()
             for item in payload.get("models", [])
         }
-        wanted = _normalize_model_name(model)
+        wanted = (model or "").strip().lower()
         if wanted in names:
             return True
         return ":" not in wanted and f"{wanted}:latest" in names
@@ -213,3 +177,30 @@ def get_chat_model(
         )
     except Exception:
         return None
+
+async def safe_llm_call(llm: Any, prompt: str, stage: str) -> str:
+    """Call llm and keep retrying on timeout-like transient errors."""
+    while True:
+        try:
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            return str(response.content)
+        except Exception as exc:
+            name = exc.__class__.__name__.lower()
+            msg = str(exc).lower()
+            is_timeout_like = (
+                isinstance(exc, TimeoutError)
+                or isinstance(exc, asyncio.TimeoutError)
+                or "timeout" in name
+                or "timeout" in msg
+                or "timed out" in msg
+            )
+            if is_timeout_like:
+                msg = str(exc).strip()
+                _logger.warning(
+                    "[%s] transient call error, retrying: %s",
+                    stage,
+                    msg if msg else exc.__class__.__name__,
+                )
+                await asyncio.sleep(1.0)
+                continue
+            raise
