@@ -21,6 +21,7 @@ class MedAgentState(MessagesState):
     plan_updated: bool
     planner_decision: str
     tools_dispatched: bool
+    planner_tool_attempts: int
 
     # Reflection
     reflection: str
