@@ -22,7 +22,7 @@ from src.graph.builder import get_graph_app
 from src.llm.model_factory import get_chat_model
 from src.prompts.prompts import INTENT_CLASSIFY_PROMPT
 from src.runtime.progress import begin_run, complete_run, fail_run, get_run, next_event, subscribe, to_sse, unsubscribe
-from src.tool.pdf_parser import parse_pdf
+from src.utils.pdf_parser import parse_pdf
 from src.utils.db import init_db
 from src.utils.image_utils import image_bytes_to_base64
 
