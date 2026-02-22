@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_PATH = PROJECT_ROOT / ".env"
 
-_OPENAI_COMPAT_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_DASHSCOPE_COMPAT_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 class Settings(BaseSettings):
@@ -25,20 +25,15 @@ class Settings(BaseSettings):
     LOG_FILE_ENCODING: str = "utf-8"
     LOG_FILE_LEVEL: str = "DEBUG"
 
-    # Global LLM
-    QWEN_MODEL: str = "qwen-plus"
+    # Global LLM settings
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = ""
     DASHSCOPE_API_KEY: str = ""
-    DASHSCOPE_BASE_URL: str = _OPENAI_COMPAT_DEFAULT_BASE_URL
+    DASHSCOPE_BASE_URL: str = _DASHSCOPE_COMPAT_DEFAULT_BASE_URL
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
-    # Runtime budgets
+    # Runtime
     AGENT_LOG_TRUNCATE: int = 600
-    ANALYSIS_BUDGET_CHARS: int = 1800
-    SEARCH_BUDGET_CHARS: int = 2000
-    PLAN_BUDGET_CHARS: int = 1600
-    REFLECTION_BUDGET_CHARS: int = 1400
 
     # Search tools
     TAVILY_API_KEY: str = ""
@@ -52,43 +47,27 @@ class Settings(BaseSettings):
     # Agent-specific overrides
     SUPERVISOR_PROVIDER: str = ""
     SUPERVISOR_MODEL: str = ""
-    SUPERVISOR_API_KEY: str = ""
-    SUPERVISOR_BASE_URL: str = ""
 
     TOOLER_TEXT_PROVIDER: str = ""
     TOOLER_TEXT_MODEL: str = ""
-    TOOLER_TEXT_API_KEY: str = ""
-    TOOLER_TEXT_BASE_URL: str = ""
 
     TOOLER_IMAGE_PROVIDER: str = ""
     TOOLER_IMAGE_MODEL: str = ""
-    TOOLER_IMAGE_API_KEY: str = ""
-    TOOLER_IMAGE_BASE_URL: str = ""
 
     TOOLER_MERGE_PROVIDER: str = ""
     TOOLER_MERGE_MODEL: str = ""
-    TOOLER_MERGE_API_KEY: str = ""
-    TOOLER_MERGE_BASE_URL: str = ""
 
     SEARCHER_PROVIDER: str = ""
     SEARCHER_MODEL: str = ""
-    SEARCHER_API_KEY: str = ""
-    SEARCHER_BASE_URL: str = ""
 
     PLANNER_PROVIDER: str = ""
     PLANNER_MODEL: str = ""
-    PLANNER_API_KEY: str = ""
-    PLANNER_BASE_URL: str = ""
 
     REFLECTOR_PROVIDER: str = ""
     REFLECTOR_MODEL: str = ""
-    REFLECTOR_API_KEY: str = ""
-    REFLECTOR_BASE_URL: str = ""
 
     SUMMARIZER_PROVIDER: str = ""
     SUMMARIZER_MODEL: str = ""
-    SUMMARIZER_API_KEY: str = ""
-    SUMMARIZER_BASE_URL: str = ""
 
     model_config = SettingsConfigDict(
         env_file=ENV_PATH,
@@ -110,22 +89,21 @@ class Settings(BaseSettings):
         return self._agent_value(agent_key, "PROVIDER")
 
     def get_agent_api_key(self, agent_key: str) -> str:
+        _ = agent_key
         return (
-            self._agent_value(agent_key, "API_KEY")
-            or self.OPENAI_API_KEY
+            self.OPENAI_API_KEY
             or self.DASHSCOPE_API_KEY
         )
 
     def get_agent_base_url(self, agent_key: str, provider_hint: str = "") -> str:
+        _ = agent_key
         hint = (provider_hint or "").strip().lower()
-        agent_base = self._agent_value(agent_key, "BASE_URL")
         if hint == "ollama":
-            return agent_base or self.OLLAMA_BASE_URL
+            return self.OLLAMA_BASE_URL
         return (
-            agent_base
-            or self.OPENAI_BASE_URL
+            self.OPENAI_BASE_URL
             or self.DASHSCOPE_BASE_URL
-            or _OPENAI_COMPAT_DEFAULT_BASE_URL
+            or _DASHSCOPE_COMPAT_DEFAULT_BASE_URL
         )
 
     def has_openai_like_creds(self, agent_key: str) -> bool:
