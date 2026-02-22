@@ -184,6 +184,7 @@ async def run_multi_agent(
         "plan_updated": False,
         "planner_decision": "",
         "tools_dispatched": False,
+        "planner_tool_attempts": 0,
         "reflection": "",
         "summary": "",
         "tool_skipped": False,
