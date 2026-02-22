@@ -1,6 +1,5 @@
 import os
 import tempfile
-import logging
 import time
 import re
 import uuid
@@ -18,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
 
 from api.schemas import IntentRouteResponse, MultiAgentResponse, StageItem
+from src.config.logger import configure_logging, get_logger
 from src.graph.builder import get_graph_app
 from src.llm.model_factory import get_chat_model
 from src.prompts.prompts import INTENT_CLASSIFY_PROMPT
@@ -34,7 +34,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logger = logging.getLogger("uvicorn.error")
+configure_logging()
+logger = get_logger(__name__)
 _GREETING_PATTERN = re.compile(
     r"^(你好|您好|hi|hello|hey|在吗|有人吗)[!！。.\s]*$",
     re.IGNORECASE,

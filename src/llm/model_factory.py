@@ -1,8 +1,15 @@
+import asyncio
 import json
-import os
 from abc import ABC, abstractmethod
 from typing import Any
 from urllib import error, request
+
+from langchain_core.messages import HumanMessage
+
+from src.config.logger import get_logger
+from src.config.settings import settings
+
+_logger = get_logger(__name__)
 
 
 def _normalize_model_name(model: str) -> str:
@@ -10,12 +17,35 @@ def _normalize_model_name(model: str) -> str:
 
 
 def _has_openai_creds(agent_key: str) -> bool:
-    key = agent_key.upper()
-    return bool(
-        os.getenv(f"{key}_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or os.getenv("DASHSCOPE_API_KEY")
-    )
+    return settings.has_openai_like_creds(agent_key)
+
+
+def _err_text(exc: Exception) -> str:
+    msg = str(exc).strip()
+    return msg if msg else exc.__class__.__name__
+
+
+async def safe_llm_call(llm: Any, prompt: str, stage: str) -> str:
+    """Call llm and keep retrying on timeout-like transient errors."""
+    while True:
+        try:
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            return str(response.content)
+        except Exception as exc:
+            name = exc.__class__.__name__.lower()
+            msg = str(exc).lower()
+            is_timeout_like = (
+                isinstance(exc, TimeoutError)
+                or isinstance(exc, asyncio.TimeoutError)
+                or "timeout" in name
+                or "timeout" in msg
+                or "timed out" in msg
+            )
+            if is_timeout_like:
+                _logger.warning("[%s] transient call error, retrying: %s", stage, _err_text(exc))
+                await asyncio.sleep(1.0)
+                continue
+            raise
 
 
 class BaseModelProvider(ABC):
@@ -53,18 +83,8 @@ class OpenAIProvider(BaseModelProvider):
     ) -> Any:
         from langchain_openai import ChatOpenAI
 
-        key = agent_key.upper()
-        api_key = (
-            os.getenv(f"{key}_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("DASHSCOPE_API_KEY", "")
-        )
-        base_url = (
-            os.getenv(f"{key}_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL")
-            or os.getenv("DASHSCOPE_BASE_URL")
-            or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        )
+        api_key = settings.get_agent_api_key(agent_key)
+        base_url = settings.get_agent_base_url(agent_key, provider_hint=self.name)
         kwargs: dict[str, Any] = {
             "model": model,
             "api_key": api_key,
@@ -81,12 +101,7 @@ class OllamaProvider(BaseModelProvider):
     name = "ollama"
 
     def _base_url(self, agent_key: str) -> str:
-        key = agent_key.upper()
-        return (
-            os.getenv(f"{key}_BASE_URL")
-            or os.getenv("OLLAMA_BASE_URL")
-            or "http://localhost:11434"
-        )
+        return settings.get_agent_base_url(agent_key, provider_hint=self.name)
 
     def _model_exists(self, base_url: str, model: str) -> bool:
         tags_url = f"{base_url.rstrip('/')}/api/tags"
@@ -164,9 +179,8 @@ class ModelFactory:
         temperature: float,
         num_ctx: int,
     ) -> Any:
-        key = agent_key.upper()
-        model = os.getenv(f"{key}_MODEL") or default_model
-        explicit_provider = os.getenv(f"{key}_PROVIDER") or ""
+        model = settings.get_agent_model(agent_key, default_model)
+        explicit_provider = settings.get_agent_provider(agent_key)
         provider = self._resolve_provider(
             agent_key=agent_key,
             model=model,

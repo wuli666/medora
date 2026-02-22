@@ -1,17 +1,17 @@
-import os
-
 import chromadb
 from langchain_core.tools import tool
 from tavily import TavilyClient
 
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-CHROMA_DIR = os.getenv("CHROMA_DIR", "./data/chroma")
+from src.config.settings import settings
+
+TAVILY_API_KEY = settings.TAVILY_API_KEY
+CHROMA_DIR = settings.CHROMA_DIR
 
 
 @tool("web_search", return_direct=False)
 def web_search(query: str) -> str:
     """Search medical web results with Tavily and return concise snippets."""
-    max_results = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+    max_results = settings.WEB_SEARCH_MAX_RESULTS
     if not TAVILY_API_KEY:
         return "Tavily API key 未配置，跳过网络搜索。"
     try:
@@ -28,7 +28,7 @@ def web_search(query: str) -> str:
 @tool("rag_search", return_direct=False)
 def rag_search(query: str) -> str:
     """Search local medical knowledge base (Chroma) and return top passages."""
-    n_results = int(os.getenv("RAG_TOP_K", "3"))
+    n_results = settings.RAG_TOP_K
     try:
         client = chromadb.PersistentClient(path=CHROMA_DIR)
         collection = client.get_collection("medical_knowledge")

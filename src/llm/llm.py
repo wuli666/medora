@@ -1,10 +1,10 @@
 """LLM wrapper module backed by model factory."""
 
-import os
 from typing import Optional, List, Dict, Any
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 
+from src.config.settings import settings
 from src.llm.model_factory import get_chat_model
 
 
@@ -89,7 +89,7 @@ class OllamaLLM:
         if not resolved_provider:
             resolved_provider = (
                 "openai"
-                if (api_key or os.getenv("OPENAI_API_KEY") or os.getenv("DASHSCOPE_API_KEY"))
+                if (api_key or settings.has_openai_like_creds(self.agent_key))
                 else "ollama"
             )
 
@@ -98,14 +98,11 @@ class OllamaLLM:
 
             resolved_api_key = (
                 api_key
-                or os.getenv("OPENAI_API_KEY")
-                or os.getenv("DASHSCOPE_API_KEY", "")
+                or settings.get_agent_api_key(self.agent_key)
             )
             resolved_base_url = (
                 base_url
-                or os.getenv("OPENAI_BASE_URL")
-                or os.getenv("DASHSCOPE_BASE_URL")
-                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                or settings.get_agent_base_url(self.agent_key, provider_hint="openai")
             )
             return ChatOpenAI(
                 model=model,
@@ -117,7 +114,9 @@ class OllamaLLM:
 
         from langchain_ollama import ChatOllama
 
-        resolved_base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        resolved_base_url = base_url or settings.get_agent_base_url(
+            self.agent_key, provider_hint="ollama"
+        )
         return ChatOllama(
             model=model,
             base_url=resolved_base_url,

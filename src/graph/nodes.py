@@ -1,15 +1,14 @@
 import asyncio
-import logging
 import re
-import os
 from typing import Literal
 
-from langchain_core.messages import HumanMessage
 from langgraph.graph import END
 from langgraph.types import Command, Send
 
+from src.config.logger import get_logger, log_stage
 from src.graph.state import MedAgentState
-from src.llm.model_factory import get_chat_model
+from src.config.settings import settings
+from src.llm.model_factory import get_chat_model, safe_llm_call
 from src.prompts.prompts import (
     INTENT_CLASSIFY_PROMPT,
     MERGE_PROMPT,
@@ -37,53 +36,13 @@ _MEDICAL_KEYWORDS = {
     "体检", "检验", "处方", "不适", "炎症",
 }
 
-logger = logging.getLogger("uvicorn.error")
-_LOG_TRUNCATE = int(os.getenv("AGENT_LOG_TRUNCATE", "600"))
-_ANALYSIS_BUDGET = int(os.getenv("ANALYSIS_BUDGET_CHARS", "1800"))
-_SEARCH_BUDGET = int(os.getenv("SEARCH_BUDGET_CHARS", "2000"))
-_PLAN_BUDGET = int(os.getenv("PLAN_BUDGET_CHARS", "1600"))
-_REFLECTION_BUDGET = int(os.getenv("REFLECTION_BUDGET_CHARS", "1400"))
+logger = get_logger(__name__)
+_ANALYSIS_BUDGET = settings.ANALYSIS_BUDGET_CHARS
+_SEARCH_BUDGET = settings.SEARCH_BUDGET_CHARS
+_PLAN_BUDGET = settings.PLAN_BUDGET_CHARS
+_REFLECTION_BUDGET = settings.REFLECTION_BUDGET_CHARS
 
-
-def _truncate_text(text: str) -> str:
-    if not text:
-        return ""
-    if len(text) <= _LOG_TRUNCATE:
-        return text
-    return f"{text[:_LOG_TRUNCATE]} ...[truncated {len(text) - _LOG_TRUNCATE} chars]"
-
-
-def _log_stage(stage: str, content: str) -> None:
-    logger.info("[%s] output:\n%s", stage, _truncate_text(content))
-
-
-async def _safe_llm_call(llm, prompt: str, stage: str) -> str:
-    """Call llm and keep retrying on timeout-like transient errors."""
-    while True:
-        try:
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
-            return str(response.content)
-        except Exception as exc:
-            name = exc.__class__.__name__.lower()
-            msg = str(exc).lower()
-            is_timeout_like = (
-                isinstance(exc, TimeoutError)
-                or isinstance(exc, asyncio.TimeoutError)
-                or "timeout" in name
-                or "timeout" in msg
-                or "timed out" in msg
-            )
-            if is_timeout_like:
-                logger.warning("[%s] transient call error, retrying: %s", stage, _err_text(exc))
-                await asyncio.sleep(1.0)
-                continue
-            raise
-
-
-def _err_text(exc: Exception) -> str:
-    msg = str(exc).strip()
-    return msg if msg else exc.__class__.__name__
-
+_SUPERVISOR_MODEL = settings.SUPERVISOR_MODEL or "qwen-plus"
 
 def _clip_text(text: str, limit: int) -> str:
     s = (text or "").strip()
@@ -94,50 +53,39 @@ def _clip_text(text: str, limit: int) -> str:
     return f"{s[:head]}\n...[内容已压缩]...\n{s[-tail:]}"
 
 
-def _is_medical_query(text: str, has_images: bool) -> bool:
-    if has_images:
-        return True
-    normalized = (text or "").strip().lower()
-    if not normalized:
-        return False
-    if _GREETING_PATTERN.match(normalized):
-        return False
-    return any(k in normalized for k in _MEDICAL_KEYWORDS)
-
-
 async def _classify_query_intent(state: MedAgentState) -> str:
     """Classify user intent via LLM first; keyword rule as fallback."""
     has_images = bool(state.get("has_images")) and bool(state.get("images"))
-    raw_text = (state.get("raw_text") or "").strip()
+    raw_text = state.get("raw_text", "").strip()
+    normalized = raw_text.lower()
 
     if has_images:
-        _log_stage("supervisor.intent", "MEDICAL (has_images=True)")
+        log_stage(logger, "supervisor.intent", "MEDICAL (has_images=True)")
         return "MEDICAL"
     if not raw_text:
-        _log_stage("supervisor.intent", "NON_MEDICAL (empty text)")
+        log_stage(logger, "supervisor.intent", "NON_MEDICAL (empty text)")
         return "NON_MEDICAL"
 
-    llm = get_chat_model("SUPERVISOR", default_model="qwen-plus", temperature=0.1)
+    llm = get_chat_model("SUPERVISOR", default_model=_SUPERVISOR_MODEL, temperature=0.1)
     if llm is not None:
-        try:
-            prompt = INTENT_CLASSIFY_PROMPT.format(user_text=raw_text)
-            response = await _safe_llm_call(llm, prompt, "supervisor.intent")
-            label = response.strip().upper().replace("-", "_")
-            if label == "NON_MEDICAL":
-                if _is_medical_query(raw_text, has_images=has_images):
-                    _log_stage("supervisor.intent", f"MEDICAL (override llm={label})")
-                    return "MEDICAL"
-                _log_stage("supervisor.intent", f"NON_MEDICAL (llm={label})")
-                return "NON_MEDICAL"
-            if label == "MEDICAL":
-                _log_stage("supervisor.intent", f"MEDICAL (llm={label})")
-                return "MEDICAL"
-        except Exception:
-            pass
+        prompt = INTENT_CLASSIFY_PROMPT.format(user_text=raw_text)
+        response = await safe_llm_call(llm, prompt, "supervisor.intent")
+        
+        label = response.strip().upper().replace("-", "_")
 
-    fallback = "MEDICAL" if _is_medical_query(raw_text, has_images=has_images) else "NON_MEDICAL"
-    _log_stage("supervisor.intent", f"{fallback} (keyword_fallback)")
-    return fallback
+        log_stage(logger, "supervisor.intent", f"{label} (LLM classified)")
+        return label
+
+    # LLM unavailable, fallback to keyword + greeting rules.
+    if _GREETING_PATTERN.match(normalized):
+        label = "NON_MEDICAL"
+    elif any(kw in normalized for kw in _MEDICAL_KEYWORDS):
+        label = "MEDICAL"
+    else:
+        label = "NON_MEDICAL"
+
+    log_stage(logger, "supervisor.intent", f"{label} (keyword_fallback)")
+    return label
 
 
 # ── Supervisor ──────────────────────────────────────────────────────
@@ -151,18 +99,18 @@ async def supervisor_node(
         await mark_stage(state["run_id"], "quick_router", "running")
         intent = await _classify_query_intent(state)
         if intent == "NON_MEDICAL":
-            llm = get_chat_model("SUPERVISOR", default_model="qwen-plus", temperature=0.3)
+            llm = get_chat_model("SUPERVISOR", default_model=_SUPERVISOR_MODEL, temperature=0.3)
             if llm is not None:
                 try:
                     prompt = NON_MEDICAL_REPLY_PROMPT.format(
                         user_text=state.get("raw_text", "")
                     )
-                    direct_reply = await _safe_llm_call(llm, prompt, "supervisor.direct_reply")
+                    direct_reply = await safe_llm_call(llm, prompt, "supervisor.direct_reply")
                 except Exception:
                     direct_reply = ""
             else:
                 direct_reply = ""
-            _log_stage("supervisor.route", "goto=END (non-medical@entry)")
+            log_stage(logger, "supervisor.route", "goto=END (non-medical@entry)")
             await mark_stage(state["run_id"], "quick_router", "done")
             await skip_remaining_after(state["run_id"], "quick_router")
             return Command(
@@ -192,13 +140,13 @@ async def supervisor_node(
         )
 
     if intent == "NON_MEDICAL":
-        _log_stage("supervisor.route", "goto=END (non-medical)")
+        log_stage(logger, "supervisor.route", "goto=END (non-medical)")
         await mark_stage(state["run_id"], "quick_router", "done")
         await skip_remaining_after(state["run_id"], "quick_router")
         return Command(goto=END)
 
     # Supervisor only handles intent + initialization.
-    _log_stage("supervisor.route", "goto=planner")
+    log_stage(logger, "supervisor.route", "goto=planner")
     return Command(goto="planner")
 
 
@@ -229,9 +177,9 @@ async def tooler_node(state: MedAgentState) -> dict:
             search_results=_clip_text(combined, _SEARCH_BUDGET),
         )
         try:
-            return await _safe_llm_call(llm, prompt, "tooler.search")
+            return await safe_llm_call(llm, prompt, "tooler.search")
         except Exception as exc:
-            return f"{combined}\n\n## 检索总结\n检索总结模型暂不可用：{_err_text(exc)}"
+            return f"{combined}\n\n## 检索总结\n检索总结模型暂不可用：{str(exc).strip() or exc.__class__.__name__}"
 
     tasks = [medgemma_analyze_text(state["raw_text"]), _run_research()]
     if state.get("has_images") and state.get("images"):
@@ -255,18 +203,18 @@ async def tooler_node(state: MedAgentState) -> dict:
                 image_analysis=image_analysis,
             )
             try:
-                merged = await _safe_llm_call(llm, prompt, "tooler.merge")
+                merged = await safe_llm_call(llm, prompt, "tooler.merge")
             except Exception:
                 merged = f"{text_analysis}\n\n## 图像分析补充\n{image_analysis}"
     else:
         image_analysis = ""
         merged = text_analysis
 
-    _log_stage("tooler.text", text_analysis)
+    log_stage(logger, "tooler.text", text_analysis)
     if image_analysis:
-        _log_stage("tooler.image", image_analysis)
-    _log_stage("tooler.merge", merged)
-    _log_stage("searcher", search_results)
+        log_stage(logger, "tooler.image", image_analysis)
+    log_stage(logger, "tooler.merge", merged)
+    log_stage(logger, "searcher", search_results)
     logger.info("[tooler] exit")
     await mark_stage(state["run_id"], "tooler", "done")
     await mark_stage(state["run_id"], "searcher", "done")
@@ -299,7 +247,7 @@ async def searcher_node(state: MedAgentState) -> dict:
 
     llm = get_chat_model("SEARCHER", default_model="qwen-plus", temperature=0.2)
     if llm is None:
-        _log_stage("searcher", combined)
+        log_stage(logger, "searcher", combined)
         logger.info("[searcher] exit (llm unavailable)")
         await mark_stage(state["run_id"], "searcher", "done")
         return {"search_results": combined}
@@ -308,14 +256,14 @@ async def searcher_node(state: MedAgentState) -> dict:
         search_results=_clip_text(combined, _SEARCH_BUDGET),
     )
     try:
-        response = await _safe_llm_call(llm, prompt, "searcher")
+        response = await safe_llm_call(llm, prompt, "searcher")
     except Exception as exc:
-        fallback = f"{combined}\n\n## 检索总结\n检索总结模型暂不可用：{_err_text(exc)}"
-        _log_stage("searcher", fallback)
+        fallback = f"{combined}\n\n## 检索总结\n检索总结模型暂不可用：{str(exc).strip() or exc.__class__.__name__}"
+        log_stage(logger, "searcher", fallback)
         logger.info("[searcher] exit (llm error)")
         await mark_stage(state["run_id"], "searcher", "done")
         return {"search_results": fallback}
-    _log_stage("searcher", response)
+    log_stage(logger, "searcher", response)
     logger.info("[searcher] exit")
     await mark_stage(state["run_id"], "searcher", "done")
     return {"search_results": response}
@@ -346,10 +294,10 @@ async def planner_node(
         else:
             init_prompt = PLAN_INIT_PROMPT.format(raw_text=_clip_text(state.get("raw_text", ""), 1200))
             try:
-                plan_text = await _safe_llm_call(llm, init_prompt, "planner.init")
+                plan_text = await safe_llm_call(llm, init_prompt, "planner.init")
             except Exception as exc:
-                plan_text = f"{_fallback_plan()}\n(初始化失败: {_err_text(exc)})"
-        _log_stage("planner.init", plan_text)
+                plan_text = f"{_fallback_plan()}\n(初始化失败: {str(exc).strip() or exc.__class__.__name__})"
+        log_stage(logger, "planner.init", plan_text)
         await mark_stage(state["run_id"], "planner", "done")
         sends: list[Send] = [Send("tooler", dict(state))]
         return Command(
@@ -385,10 +333,10 @@ async def planner_node(
                 + feedback_section
             )
             try:
-                response = await _safe_llm_call(llm, prompt, "planner.update")
+                response = await safe_llm_call(llm, prompt, "planner.update")
             except Exception as exc:
-                response = f"{state.get('plan', _fallback_plan())}\n(更新失败: {_err_text(exc)})"
-        _log_stage("planner.update", response)
+                response = f"{state.get('plan', _fallback_plan())}\n(更新失败: {str(exc).strip() or exc.__class__.__name__})"
+        log_stage(logger, "planner.update", response)
         await mark_stage(state["run_id"], "planner", "done")
         return Command(
             goto="reflector",
@@ -409,7 +357,7 @@ async def reflector_node(state: MedAgentState) -> dict:
     llm = get_chat_model("REFLECTOR", default_model="qwen-plus", temperature=0.2)
     if llm is None:
         fallback = "当前无法调用反思校验模型，建议由医生进一步复核方案。"
-        _log_stage("reflector", fallback)
+        log_stage(logger, "reflector", fallback)
         logger.info("[reflector] exit (llm unavailable)")
         await mark_stage(state["run_id"], "reflector", "done")
         return {"reflection": fallback}
@@ -419,14 +367,14 @@ async def reflector_node(state: MedAgentState) -> dict:
         plan=_clip_text(state["plan"], _PLAN_BUDGET),
     )
     try:
-        response = await _safe_llm_call(llm, prompt, "reflector")
+        response = await safe_llm_call(llm, prompt, "reflector")
     except Exception as exc:
         fallback = "质检暂不可用（不影响主流程）"
-        _log_stage("reflector", fallback)
-        logger.info("[reflector] exit (llm error): %s", _err_text(exc))
+        log_stage(logger, "reflector", fallback)
+        logger.info("[reflector] exit (llm error): %s", str(exc).strip() or exc.__class__.__name__)
         await mark_stage(state["run_id"], "reflector", "done")
         return {"reflection": fallback}
-    _log_stage("reflector", response)
+    log_stage(logger, "reflector", response)
     logger.info("[reflector] exit")
     await mark_stage(state["run_id"], "reflector", "done")
     return {"reflection": response}
@@ -439,7 +387,7 @@ async def summarize_node(state: MedAgentState) -> dict:
     await mark_stage(state["run_id"], "summarize", "running")
     # If supervisor already provided a direct summary, return it as-is.
     if state.get("summary"):
-        _log_stage("summarizer", state["summary"])
+        log_stage(logger, "summarizer", state["summary"])
         logger.info("[summarizer] exit (pre-filled summary)")
         await mark_stage(state["run_id"], "summarize", "done")
         return {"summary": state["summary"]}
@@ -450,7 +398,7 @@ async def summarize_node(state: MedAgentState) -> dict:
             "当前系统无法连接到总结模型，已返回基础流程结果。"
             "请在模型可用后重试，或咨询专业医生获取最终意见。"
         )
-        _log_stage("summarizer", fallback)
+        log_stage(logger, "summarizer", fallback)
         logger.info("[summarizer] exit (llm unavailable)")
         await mark_stage(state["run_id"], "summarize", "done")
         return {"summary": fallback}
@@ -458,13 +406,13 @@ async def summarize_node(state: MedAgentState) -> dict:
     if (state.get("query_intent") or "").upper() == "NON_MEDICAL":
         prompt = NON_MEDICAL_REPLY_PROMPT.format(user_text=state.get("raw_text", ""))
         try:
-            response = await _safe_llm_call(llm, prompt, "summarizer.non_medical")
+            response = await safe_llm_call(llm, prompt, "summarizer.non_medical")
         except Exception as exc:
             response = (
                 "我在。你可以继续告诉我你的问题；如果有病历或检查内容，我也可以帮你解读。"
-                f"(错误信息: {_err_text(exc)})"
+                f"(错误信息: {str(exc).strip() or exc.__class__.__name__})"
             )
-        _log_stage("summarizer", response)
+        log_stage(logger, "summarizer", response)
         logger.info("[summarizer] exit (non-medical llm reply)")
         await mark_stage(state["run_id"], "summarize", "done")
         return {"summary": response}
@@ -475,15 +423,15 @@ async def summarize_node(state: MedAgentState) -> dict:
         reflection=_clip_text(state["reflection"], _REFLECTION_BUDGET),
     )
     try:
-        response = await _safe_llm_call(llm, prompt, "summarizer")
+        response = await safe_llm_call(llm, prompt, "summarizer")
     except Exception as exc:
         response = (
             "总结模型暂不可用，以下为简要结论：\n"
             f"- 解析结果、检索补充、计划与校验已完成。\n"
             f"- 建议按计划执行，并在症状变化时及时复诊。\n"
-            f"(错误信息: {_err_text(exc)})"
+            f"(错误信息: {str(exc).strip() or exc.__class__.__name__})"
         )
-    _log_stage("summarizer", response)
+    log_stage(logger, "summarizer", response)
     logger.info("[summarizer] exit")
     await mark_stage(state["run_id"], "summarize", "done")
     return {"summary": response}
