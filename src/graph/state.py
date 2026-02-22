@@ -1,7 +1,7 @@
 from typing import TypedDict
+from langgraph.graph import MessagesState
 
-
-class MedAgentState(TypedDict):
+class MedAgentState(MessagesState):
     run_id: str
     # Input
     raw_text: str
