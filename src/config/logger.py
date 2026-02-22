@@ -1,6 +1,9 @@
 import logging
+from typing import Any
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from src.config.settings import settings
 
@@ -108,18 +111,32 @@ def get_logger(name: str | None = None) -> logging.Logger:
     return base_logger.getChild(name)
 
 
-def log_stage(logger: logging.Logger, stage: str, content: str) -> None:
-    truncated = ""
+def _stringify_log_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, BaseModel):
+        try:
+            return content.model_dump_json(ensure_ascii=False)
+        except Exception:
+            return str(content)
+    return str(content)
 
-    if not content:
-        truncated = "[EMPTY]"
 
-    if len(content) <= settings.AGENT_LOG_TRUNCATE:
-        truncated = content
+def log_stage(logger: logging.Logger, stage: str, content: Any) -> None:
+    text = _stringify_log_content(content)
+
+    if not text:
+        logger.info("[%s] output:\n[EMPTY]", stage)
+        return
+
+    if len(text) <= settings.AGENT_LOG_TRUNCATE:
+        truncated = text
     else:
         truncated = (
-            f"{content[:settings.AGENT_LOG_TRUNCATE]} "
-            f"...[truncated {len(content) - settings.AGENT_LOG_TRUNCATE} chars]"
+            f"{text[:settings.AGENT_LOG_TRUNCATE]} "
+            f"...[truncated {len(text) - settings.AGENT_LOG_TRUNCATE} chars]"
         )
 
     logger.info("[%s] output:\n%s", stage, truncated)
