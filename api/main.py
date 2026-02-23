@@ -1,6 +1,5 @@
 import os
 import tempfile
-import logging
 import time
 import re
 import uuid
@@ -18,11 +17,12 @@ from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
 
 from api.schemas import IntentRouteResponse, MultiAgentResponse, StageItem
+from src.config.logger import configure_logging, get_logger
 from src.graph.builder import get_graph_app
 from src.llm.model_factory import get_chat_model
 from src.prompts.prompts import INTENT_CLASSIFY_PROMPT
 from src.runtime.progress import begin_run, complete_run, fail_run, get_run, next_event, subscribe, to_sse, unsubscribe
-from src.tool.pdf_parser import parse_pdf
+from src.utils.pdf_parser import parse_pdf
 from src.utils.db import init_db
 from src.utils.image_utils import image_bytes_to_base64
 
@@ -34,7 +34,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logger = logging.getLogger("uvicorn.error")
+configure_logging()
+logger = get_logger(__name__)
 _GREETING_PATTERN = re.compile(
     r"^(你好|您好|hi|hello|hey|在吗|有人吗)[!！。.\s]*$",
     re.IGNORECASE,
@@ -180,14 +181,13 @@ async def run_multi_agent(
         "merged_analysis": "",
         "search_results": "",
         "plan": "",
-        "plan_updated": False,
         "planner_decision": "",
         "tools_dispatched": False,
+        "planner_tool_attempts": 0,
         "reflection": "",
         "summary": "",
         "tool_skipped": False,
         "iteration": 0,
-        "revision_feedback": "",
         "query_intent": "",
     }
 

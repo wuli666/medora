@@ -211,3 +211,7 @@ __marimo__/
 
 frontend/.npm-cache/
 frontend/.npm-logs/
+
+# Local Custom Ignore Rules
+agent_example/*
+agent_structure.png

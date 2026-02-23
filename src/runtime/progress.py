@@ -17,9 +17,19 @@ _RUNS: dict[str, dict[str, Any]] = {}
 _SUBSCRIBERS: dict[str, set[asyncio.Queue]] = {}
 _LOCK = asyncio.Lock()
 
+async def _broadcast(run_id: str, event: str, data: dict[str, Any]) -> None:
+    async with _LOCK:
+        queues = list(_SUBSCRIBERS.get(run_id, set()))
+    if not queues:
+        return
+    packet = {"event": event, "data": data}
+    for q in queues:
+        q.put_nowait(packet)
 
-def _default_stages():
-    return [
+async def begin_run(run_id: str) -> None:
+    payload = None
+
+    default_stages = [
         {
             "key": key,
             "label": label,
@@ -31,23 +41,13 @@ def _default_stages():
         for key, label in STAGE_META
     ]
 
-
-def _find_stage(run: dict[str, Any], stage_key: str) -> dict[str, Any] | None:
-    for s in run["stages"]:
-        if s["key"] == stage_key:
-            return s
-    return None
-
-
-async def begin_run(run_id: str) -> None:
-    payload = None
     async with _LOCK:
         _RUNS[run_id] = {
             "run_id": run_id,
             "done": False,
             "error": "",
             "response": None,
-            "stages": _default_stages(),
+            "stages": default_stages,
             "created_at": time.time(),
             "updated_at": time.time(),
         }
@@ -61,7 +61,7 @@ async def mark_stage(run_id: str, stage_key: str, status: str, content: str = ""
         run = _RUNS.get(run_id)
         if not run:
             return
-        stage = _find_stage(run, stage_key)
+        stage = next((s for s in run["stages"] if s["key"] == stage_key), None)
         if not stage:
             return
         now = time.time()
@@ -164,16 +164,6 @@ async def next_event(queue: asyncio.Queue, timeout: float = 15.0) -> dict[str, A
         return await asyncio.wait_for(queue.get(), timeout=timeout)
     except asyncio.TimeoutError:
         return None
-
-
-async def _broadcast(run_id: str, event: str, data: dict[str, Any]) -> None:
-    async with _LOCK:
-        queues = list(_SUBSCRIBERS.get(run_id, set()))
-    if not queues:
-        return
-    packet = {"event": event, "data": data}
-    for q in queues:
-        q.put_nowait(packet)
 
 
 def to_sse(event: str, data: dict[str, Any]) -> str:

@@ -3,7 +3,6 @@ from langgraph.graph import END, START, StateGraph
 from src.graph.nodes import (
     planner_node,
     reflector_node,
-    searcher_node,
     summarize_node,
     supervisor_node,
     tooler_node,
@@ -17,7 +16,6 @@ def build_graph():
     # --- nodes ---
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("tooler", tooler_node)
-    graph.add_node("searcher", searcher_node)
     graph.add_node("planner", planner_node)
     graph.add_node("reflector", reflector_node)
     graph.add_node("summarize", summarize_node)
@@ -27,7 +25,6 @@ def build_graph():
 
     # Planner-centric loop: workers return to planner
     graph.add_edge("tooler", "planner")
-    graph.add_edge("searcher", "planner")
     graph.add_edge("reflector", "planner")
 
     # Summarize terminates the graph

@@ -1,31 +1,36 @@
 import asyncio
-import logging
+import json
 import re
-import os
-from typing import Literal
+from typing import Any, Literal
 
-from langchain_core.messages import HumanMessage
-from langgraph.graph import END
-from langgraph.types import Command, Send
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.types import Command
+from pydantic import BaseModel, Field
 
+
+from src.config.logger import get_logger, log_stage
+from src.config.settings import settings
 from src.graph.state import MedAgentState
-from src.llm.model_factory import get_chat_model
+from src.llm.model_factory import get_chat_model, safe_llm_call
 from src.prompts.prompts import (
     INTENT_CLASSIFY_PROMPT,
     MERGE_PROMPT,
     NON_MEDICAL_REPLY_PROMPT,
     PLAN_INIT_PROMPT,
+    PLAN_TOOL_PROMPT,
     PLAN_PROMPT,
     REFLECT_PROMPT,
     SEARCH_SUMMARY_PROMPT,
     SUMMARIZE_PROMPT,
-    SUPERVISOR_EVAL_PROMPT,
 )
-from src.runtime.progress import mark_stage, skip_remaining_after
-from src.tool.medgemma_tool import medgemma_analyze_image, medgemma_analyze_text
-from src.tool.search_tools import rag_search, web_search
+from src.runtime.progress import mark_stage
+from src.tool import tools, tools_by_name
+from src.utils.tool_calling import (
+    latest_ai_message,
+    parse_tool_payload,
+    tool_text_or_error,
+)
 
-MAX_REDO = 2
 _GREETING_PATTERN = re.compile(
     r"^(你好|您好|hi|hello|hey|在吗|有人吗)[!！。.\s]*$",
     re.IGNORECASE,
@@ -37,241 +42,387 @@ _MEDICAL_KEYWORDS = {
     "体检", "检验", "处方", "不适", "炎症",
 }
 
-logger = logging.getLogger("uvicorn.error")
-_LOG_TRUNCATE = int(os.getenv("AGENT_LOG_TRUNCATE", "600"))
-_ANALYSIS_BUDGET = int(os.getenv("ANALYSIS_BUDGET_CHARS", "1800"))
-_SEARCH_BUDGET = int(os.getenv("SEARCH_BUDGET_CHARS", "2000"))
-_PLAN_BUDGET = int(os.getenv("PLAN_BUDGET_CHARS", "1600"))
-_REFLECTION_BUDGET = int(os.getenv("REFLECTION_BUDGET_CHARS", "1400"))
+logger = get_logger(__name__)
+
+_SUPERVISOR_MODEL = settings.SUPERVISOR_MODEL or "qwen-plus"
+_PLANNER_MODEL = settings.PLANNER_MODEL or "qwen-plus"
+_TOOLER_MERGE_MODEL = settings.TOOLER_MERGE_MODEL or "qwen-plus"
+_SEARCHER_MODEL = settings.SEARCHER_MODEL or "qwen-plus"
+_REFLECTOR_MODEL = settings.REFLECTOR_MODEL or "qwen-plus"
+_SUMMARIZER_MODEL = settings.SUMMARIZER_MODEL or "qwen-plus"
+_TOOLER_MAX_CONCURRENCY = 4
+_MAX_TOOL_CALL_RETRIES = 2
+_MAX_REFLECT_ITERATIONS = 2
+_NO_TOOL_SEARCH_FALLBACK = "（未执行检索，基于已有信息生成）"
+
+class UserIntent(BaseModel):
+    INTENT: Literal["MEDICAL", "NON_MEDICAL"] = Field(
+        description="Issue severity level."
+    )
 
 
-def _truncate_text(text: str) -> str:
-    if not text:
-        return ""
-    if len(text) <= _LOG_TRUNCATE:
-        return text
-    return f"{text[:_LOG_TRUNCATE]} ...[truncated {len(text) - _LOG_TRUNCATE} chars]"
-
-
-def _log_stage(stage: str, content: str) -> None:
-    logger.info("[%s] output:\n%s", stage, _truncate_text(content))
-
-
-async def _safe_llm_call(llm, prompt: str, stage: str) -> str:
-    """Call llm and keep retrying on timeout-like transient errors."""
-    while True:
-        try:
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
-            return str(response.content)
-        except Exception as exc:
-            name = exc.__class__.__name__.lower()
-            msg = str(exc).lower()
-            is_timeout_like = (
-                isinstance(exc, TimeoutError)
-                or isinstance(exc, asyncio.TimeoutError)
-                or "timeout" in name
-                or "timeout" in msg
-                or "timed out" in msg
-            )
-            if is_timeout_like:
-                logger.warning("[%s] transient call error, retrying: %s", stage, _err_text(exc))
-                await asyncio.sleep(1.0)
-                continue
-            raise
-
-
-def _err_text(exc: Exception) -> str:
-    msg = str(exc).strip()
-    return msg if msg else exc.__class__.__name__
-
-
-def _clip_text(text: str, limit: int) -> str:
-    s = (text or "").strip()
-    if len(s) <= limit:
-        return s
-    head = int(limit * 0.72)
-    tail = max(120, limit - head - 24)
-    return f"{s[:head]}\n...[内容已压缩]...\n{s[-tail:]}"
-
-
-def _is_medical_query(text: str, has_images: bool) -> bool:
-    if has_images:
-        return True
-    normalized = (text or "").strip().lower()
-    if not normalized:
-        return False
-    if _GREETING_PATTERN.match(normalized):
-        return False
-    return any(k in normalized for k in _MEDICAL_KEYWORDS)
-
-
-async def _classify_query_intent(state: MedAgentState) -> str:
-    """Classify user intent via LLM first; keyword rule as fallback."""
-    has_images = bool(state.get("has_images")) and bool(state.get("images"))
-    raw_text = (state.get("raw_text") or "").strip()
-
-    if has_images:
-        _log_stage("supervisor.intent", "MEDICAL (has_images=True)")
-        return "MEDICAL"
-    if not raw_text:
-        _log_stage("supervisor.intent", "NON_MEDICAL (empty text)")
-        return "NON_MEDICAL"
-
-    llm = get_chat_model("SUPERVISOR", default_model="qwen-plus", temperature=0.1)
-    if llm is not None:
-        try:
-            prompt = INTENT_CLASSIFY_PROMPT.format(user_text=raw_text)
-            response = await _safe_llm_call(llm, prompt, "supervisor.intent")
-            label = response.strip().upper().replace("-", "_")
-            if label == "NON_MEDICAL":
-                if _is_medical_query(raw_text, has_images=has_images):
-                    _log_stage("supervisor.intent", f"MEDICAL (override llm={label})")
-                    return "MEDICAL"
-                _log_stage("supervisor.intent", f"NON_MEDICAL (llm={label})")
-                return "NON_MEDICAL"
-            if label == "MEDICAL":
-                _log_stage("supervisor.intent", f"MEDICAL (llm={label})")
-                return "MEDICAL"
-        except Exception:
-            pass
-
-    fallback = "MEDICAL" if _is_medical_query(raw_text, has_images=has_images) else "NON_MEDICAL"
-    _log_stage("supervisor.intent", f"{fallback} (keyword_fallback)")
-    return fallback
+class reflect_report(BaseModel):
+    completeness_check: str = Field(
+        description="Missing key medical history/exam/medication information."
+    )
+    consistency_check: str = Field(
+        description="Whether analysis, search and plan are consistent."
+    )
+    hallucination_risk: str = Field(
+        description="Claims potentially lacking evidence."
+    )
+    minimal_corrections: list[str] = Field(
+        description="1-3 executable minimal corrections."
+    )
+    quality_conclusion: Literal["PASS", "FAIL"] = Field(
+        description="Final quality gate conclusion."
+    )
 
 
 # ── Supervisor ──────────────────────────────────────────────────────
 async def supervisor_node(
     state: MedAgentState,
-) -> Command[Literal["tooler", "searcher", "planner", "reflector", "summarize", "__end__"]]:
+) -> Command[Literal["planner", "summarize"]]:
     """Central router: decide which worker to invoke next."""
     logger.info("[supervisor] enter")
+    run_id = state["run_id"]
     intent = state.get("query_intent", "").strip().upper()
-    if not intent:
-        await mark_stage(state["run_id"], "quick_router", "running")
-        intent = await _classify_query_intent(state)
-        if intent == "NON_MEDICAL":
-            llm = get_chat_model("SUPERVISOR", default_model="qwen-plus", temperature=0.3)
-            if llm is not None:
-                try:
-                    prompt = NON_MEDICAL_REPLY_PROMPT.format(
-                        user_text=state.get("raw_text", "")
-                    )
-                    direct_reply = await _safe_llm_call(llm, prompt, "supervisor.direct_reply")
-                except Exception:
-                    direct_reply = ""
-            else:
-                direct_reply = ""
-            _log_stage("supervisor.route", "goto=END (non-medical@entry)")
-            await mark_stage(state["run_id"], "quick_router", "done")
-            await skip_remaining_after(state["run_id"], "quick_router")
-            return Command(
-                goto=END,
-                update={
-                    "query_intent": intent,
-                    "summary": (
-                        direct_reply
-                        or "我在。你可以直接说你的问题；如果有病历、检查或用药相关内容，也可以发我帮你解读。"
-                    ),
-                },
-            )
-        await mark_stage(state["run_id"], "quick_router", "done")
-        # Medical query enters planner first (todo list).
-        return Command(
-            goto="planner",
-            update={
-                "query_intent": intent,
-                "tool_skipped": not bool(state.get("has_images")),
-                "merged_analysis": state.get("raw_text", "") if not state.get("has_images") else state.get("merged_analysis", ""),
-                "medical_text_analysis": state.get("medical_text_analysis", ""),
-                "medical_image_analysis": state.get("medical_image_analysis", ""),
-                "plan_updated": False,
-                "planner_decision": "",
-                "tools_dispatched": False,
-            },
-        )
+    has_images = bool(state.get("has_images"))
+    raw_user_text = state.get("raw_text", "")
+    messages = list(state.get("messages", []))
+    if raw_user_text:
+        last = messages[-1] if messages else None
+        last_type = getattr(last, "type", "")
+        last_content = str(getattr(last, "content", ""))
+        if last_type != "human" or last_content != raw_user_text:
+            messages.append(HumanMessage(content=raw_user_text))
 
     if intent == "NON_MEDICAL":
-        _log_stage("supervisor.route", "goto=END (non-medical)")
-        await mark_stage(state["run_id"], "quick_router", "done")
-        await skip_remaining_after(state["run_id"], "quick_router")
-        return Command(goto=END)
+        logger.info("[supervisor] route=summarize (cached non-medical)")
+        await mark_stage(run_id, "quick_router", "done")
+        return Command(
+            update={"query_intent": intent, "messages": messages},
+            goto="summarize",
+        )
+
+    if not intent:
+        await mark_stage(run_id, "quick_router", "running")
+        raw_text = state.get("raw_text", "").strip()
+        normalized = raw_text.lower()
+
+        if has_images and state.get("images"):
+            intent = "MEDICAL"
+            logger.info("[supervisor] intent=MEDICAL (has_images=True)")
+        elif not raw_text:
+            intent = "NON_MEDICAL"
+            logger.info("[supervisor] intent=NON_MEDICAL (empty text)")
+        else:
+            prompt = INTENT_CLASSIFY_PROMPT.format(user_text=raw_text)
+            llm = get_chat_model("SUPERVISOR", default_model=_SUPERVISOR_MODEL, temperature=0.1)
+            logger.info("[supervisor] intent classify via llm model=%s", _SUPERVISOR_MODEL)
+            structured_llm = llm.with_structured_output(UserIntent)
+            response = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+            log_stage(logger, "supervisor.intent", response)
+
+            if isinstance(response, UserIntent):
+                intent = response.INTENT
+            else:
+                intent = str(response).strip().upper().replace("-", "_")
+            
+            logger.info("[supervisor] intent=%s (llm classified)", intent)
+            if intent not in {"MEDICAL", "NON_MEDICAL"}:
+                if _GREETING_PATTERN.match(normalized):
+                    intent = "NON_MEDICAL"
+                    logger.info("[supervisor] intent=NON_MEDICAL (keyword_fallback)")
+                elif any(kw in normalized for kw in _MEDICAL_KEYWORDS):
+                    intent = "MEDICAL"
+                    logger.info("[supervisor] intent=MEDICAL (keyword_fallback)")
+                else:
+                    intent = "NON_MEDICAL"
+                    logger.info("[supervisor] intent=NON_MEDICAL (keyword_fallback)")
+
+        if intent == "NON_MEDICAL":
+            logger.info("[supervisor] route=summarize (entry non-medical)")
+            await mark_stage(run_id, "quick_router", "done")
+            return Command(
+                update={"query_intent": intent, "messages": messages},
+                goto="summarize",
+            )
+
+        await mark_stage(run_id, "quick_router", "done")
+        # Medical query enters planner first (todo list).
+        return Command(
+            update={
+                "query_intent": intent,
+                "messages": messages,
+                "tool_skipped": False,
+                "merged_analysis": state.get("raw_text", "") if not has_images else state.get("merged_analysis", ""),
+                "medical_text_analysis": state.get("medical_text_analysis", ""),
+                "medical_image_analysis": state.get("medical_image_analysis", ""),
+                "planner_decision": "",
+                "tools_dispatched": False,
+                "planner_tool_attempts": 0,
+            },
+            goto="planner",
+        )
 
     # Supervisor only handles intent + initialization.
-    _log_stage("supervisor.route", "goto=planner")
+    logger.info("[supervisor] route=planner")
     return Command(goto="planner")
+
+
+# ── Planner ─────────────────────────────────────────────────────────
+async def planner_node(
+    state: MedAgentState,
+) -> Command[Literal["tooler", "reflector", "summarize"]]:
+    """Planner-centric orchestrator with phase-driven routing."""
+    logger.info("[planner] enter")
+    run_id = state["run_id"]
+    await mark_stage(run_id, "planner", "running")
+
+    llm = get_chat_model("PLANNER", default_model=_PLANNER_MODEL, temperature=0.3)
+
+    plan_text = str(state.get("plan", "")).strip()
+    tools_dispatched = bool(state.get("tools_dispatched"))
+    decision = str(state.get("planner_decision", "")).strip().upper()
+    reflection_text = str(state.get("reflection", "")).strip()
+    pre_updates: dict[str, Any] = {}
+
+    if decision == "SUMMARY":
+        logger.info("[planner] route=summarize (reflector approved)")
+        await mark_stage(run_id, "planner", "done")
+        return Command(update={"planner_decision": "SUMMARY"}, goto="summarize")
+
+    if decision == "REDO":
+        logger.info("[planner] decision=REDO, re-planning before tool dispatch")
+        analysis_context = state.get("merged_analysis", "") or state.get("raw_text", "")
+        search_context = state.get("search_results", "") or "（未检索到外部证据）"
+        reflection_section = (
+            f"\n\n## 上一轮质检反馈（请据此修正计划）\n{reflection_text}"
+            if reflection_text
+            else ""
+        )
+        prompt = (
+            PLAN_PROMPT.format(
+                analysis=analysis_context,
+                search_results=search_context,
+            )
+            + reflection_section
+        )
+        response = await safe_llm_call(llm, prompt, "planner.update")
+        log_stage(logger, "planner.update", response)
+        plan_text = response
+        tools_dispatched = False
+        pre_updates.update(
+            {
+                "plan": response,
+                "planner_decision": "",
+                "tools_dispatched": False,
+                "planner_tool_attempts": 0,
+                "tool_skipped": False,
+            }
+        )
+
+    if not plan_text:
+        # INIT_PLAN
+        logger.info("[planner] generating initial plan via llm model=%s", _PLANNER_MODEL)
+        init_prompt = PLAN_INIT_PROMPT.format(raw_text=state.get("raw_text", ""))
+        plan_text = await safe_llm_call(llm, init_prompt, "planner.init")
+        log_stage(logger, "planner.init", plan_text)
+        tools_dispatched = False
+        pre_updates.update(
+            {
+                "plan": plan_text,
+                "tools_dispatched": False,
+                "planner_decision": "",
+                "planner_tool_attempts": 0,
+                "tool_skipped": False,
+            }
+        )
+
+    if not tools_dispatched:
+        # DISPATCH_TOOLS
+        llm_with_tools = llm.bind_tools(tools)
+
+        logger.info("[planner] requesting tool calls via llm")
+        reflection_section = (
+            f"\n\n上一轮质检反馈（请据此调整工具调用）：\n{reflection_text}"
+            if reflection_text
+            else ""
+        )
+
+        planner_human = (
+            f"用户输入：{state.get('raw_text', '')}\n\n"
+            f"当前执行清单：{plan_text}\n\n"
+            f"请根据需要调用工具。{reflection_section}"
+        )
+
+        attempts = 0
+        for attempt in range(1, _MAX_TOOL_CALL_RETRIES + 2):
+            attempts = attempt
+            response = await llm_with_tools.ainvoke(
+                [
+                    SystemMessage(content=PLAN_TOOL_PROMPT),
+                    HumanMessage(content=planner_human),
+                ]
+            )
+            ai_response = response if isinstance(response, AIMessage) else None
+
+            if ai_response is not None and ai_response.tool_calls:
+                await mark_stage(run_id, "planner", "done")
+                return Command(
+                    update={
+                        **pre_updates,
+                        "messages": [ai_response],
+                        "tools_dispatched": True,
+                        "planner_tool_attempts": attempts,
+                    },
+                    goto="tooler",
+                )
+
+            if attempt <= _MAX_TOOL_CALL_RETRIES:
+                logger.info("[planner] no tool calls detected, retrying attempt=%s", attempt)
+
+        logger.warning("[planner] no tool calls after %s attempts, fallback to no-tool planning", attempts)
+        fallback_search = state.get("search_results", "") or _NO_TOOL_SEARCH_FALLBACK
+        fallback_merged = state.get("merged_analysis", "") or state.get("raw_text", "")
+        await mark_stage(run_id, "planner", "done")
+        return Command(
+            update={
+                **pre_updates,
+                "tools_dispatched": True,
+                "tool_skipped": True,
+                "planner_tool_attempts": attempts,
+                "search_results": fallback_search,
+                "merged_analysis": fallback_merged,
+                "planner_decision": "REFLECT",
+            },
+            goto="reflector",
+        )
+
+    await mark_stage(run_id, "planner", "done")
+    logger.info("[planner] route=reflector (tools already dispatched)")
+    return Command(update={**pre_updates, "planner_decision": "REFLECT"}, goto="reflector")
 
 
 # ── Tooler (MedGemma text ∥ image → merge) ─────────────────────────
 async def tooler_node(state: MedAgentState) -> dict:
-    """Run tool stage with parallel sub-tools:
-    1) text analysis
-    2) image analysis (if any)
-    3) research search
-    """
+    """Execute planner tool calls and map JSON outputs into graph fields."""
     logger.info("[tooler] enter has_images=%s", bool(state.get("has_images")))
     await mark_stage(state["run_id"], "tooler", "running")
-    await mark_stage(state["run_id"], "searcher", "running")
 
-    async def _run_research() -> str:
-        analysis_seed = state.get("raw_text", "")
-        planning_hint = state.get("plan", "")
-        query = f"{planning_hint}\n{analysis_seed}"[:240]
-        web_results = await asyncio.to_thread(web_search.invoke, {"query": f"医学 {query}"})
-        rag_results = await asyncio.to_thread(rag_search.invoke, {"query": query})
-        combined = f"## 网络搜索结果\n{web_results}\n\n## 知识库搜索结果\n{rag_results}"
+    ai_message = latest_ai_message(state)
+    if ai_message is None or not ai_message.tool_calls:
+        logger.info("[tooler] no pending tool calls, noop")
+        await mark_stage(state["run_id"], "tooler", "done")
+        return {}
 
-        llm = get_chat_model("SEARCHER", default_model="qwen-plus", temperature=0.2)
-        if llm is None:
-            return combined
-        prompt = SEARCH_SUMMARY_PROMPT.format(
-            analysis=_clip_text(analysis_seed, _ANALYSIS_BUDGET),
-            search_results=_clip_text(combined, _SEARCH_BUDGET),
-        )
-        try:
-            return await _safe_llm_call(llm, prompt, "tooler.search")
-        except Exception as exc:
-            return f"{combined}\n\n## 检索总结\n检索总结模型暂不可用：{_err_text(exc)}"
+    tool_calls = list(ai_message.tool_calls)
+    logger.info("[tooler] executing %s tool calls", len(tool_calls))
+    semaphore = asyncio.Semaphore(max(1, _TOOLER_MAX_CONCURRENCY))
 
-    tasks = [medgemma_analyze_text(state["raw_text"]), _run_research()]
-    if state.get("has_images") and state.get("images"):
-        for img in state["images"]:
-            tasks.append(medgemma_analyze_image(img, state["raw_text"]))
+    async def _run_tool_call(idx: int, tool_call: dict[str, Any]) -> tuple[int, ToolMessage, dict[str, Any]]:
+        tool_name = str(tool_call.get("name", ""))
+        tool_call_id = str(tool_call.get("id", tool_name or f"call_{idx}"))
+        args = tool_call.get("args", {})
+        if not isinstance(args, dict):
+            args = {}
+        else:
+            args = dict(args)
 
-    results = await asyncio.gather(*tasks)
+        # Do not trust planner-provided image payloads; always use uploaded state images.
+        if tool_name == "analyze_medical_image":
+            images = state.get("images", [])
+            if isinstance(images, list) and images:
+                image_index_raw = args.pop("image_index", 0)
+                try:
+                    image_index = int(image_index_raw)
+                except (TypeError, ValueError):
+                    image_index = 0
+                image_index = max(0, min(image_index, len(images) - 1))
+                args["image_base64"] = str(images[image_index])
+                if not isinstance(args.get("clinical_context"), str):
+                    args["clinical_context"] = state.get("raw_text", "")
 
-    text_analysis = results[0]
-    search_results = results[1]
-    image_analyses = list(results[2:])
+        tool_impl = tools_by_name.get(tool_name)
+        if tool_impl is None:
+            payload = {
+                "tool": tool_name,
+                "ok": False,
+                "data": {},
+                "error": {"code": "UNKNOWN_TOOL", "message": f"Unknown tool: {tool_name}"},
+                "meta": {"version": "1.0"},
+            }
+            content = json.dumps(payload, ensure_ascii=False)
+            return idx, ToolMessage(content=content, tool_call_id=tool_call_id, name=tool_name), payload
+
+        async with semaphore:
+            observation = await tool_impl.ainvoke(args)
+        payload = parse_tool_payload(tool_name, observation)
+        content = json.dumps(payload, ensure_ascii=False)
+        return idx, ToolMessage(content=content, tool_call_id=tool_call_id, name=tool_name), payload
+
+    executed = await asyncio.gather(*[_run_tool_call(i, tc) for i, tc in enumerate(tool_calls)])
+    ordered = sorted(executed, key=lambda item: item[0])
+    tool_messages = [message for _, message, _ in ordered]
+    payloads = [payload for _, _, payload in ordered]
+
+    text_payloads = [p for p in payloads if p.get("tool") == "analyze_medical_text"]
+    image_payloads = [p for p in payloads if p.get("tool") == "analyze_medical_image"]
+    web_payloads = [p for p in payloads if p.get("tool") == "web_search"]
+    rag_payloads = [p for p in payloads if p.get("tool") == "rag_search"]
+
+    text_analysis = tool_text_or_error(text_payloads[0]) if text_payloads else ""
+    image_analyses = [tool_text_or_error(p) for p in image_payloads]
+    image_analyses = [t for t in image_analyses if t]
+
+    web_summary = ""
+    if web_payloads:
+        web_summary = str(web_payloads[0].get("data", {}).get("summary", ""))
+        if not web_summary:
+            web_summary = tool_text_or_error(web_payloads[0], key="summary")
+
+    rag_summary = ""
+    if rag_payloads:
+        rag_summary = str(rag_payloads[0].get("data", {}).get("summary", ""))
+        if not rag_summary:
+            rag_summary = tool_text_or_error(rag_payloads[0], key="summary")
+
+    combined_search = f"## 网络搜索结果\n{web_summary}\n\n## 知识库搜索结果\n{rag_summary}"
+    llm = get_chat_model("SEARCHER", default_model=_SEARCHER_MODEL, temperature=0.2)
+
+    prompt = SEARCH_SUMMARY_PROMPT.format(
+        analysis=text_analysis or state.get("raw_text", ""),
+        search_results=combined_search,
+    )
+
+    logger.info("[tooler] summarizing search results via llm model=%s", _SEARCHER_MODEL)
+    search_results = await safe_llm_call(llm, prompt, "tooler.search")
 
     if image_analyses:
         image_analysis = "\n---\n".join(image_analyses)
-        llm = get_chat_model("TOOLER_MERGE", default_model="qwen-plus", temperature=0.2)
-        if llm is None:
-            merged = f"{text_analysis}\n\n## 图像分析补充\n{image_analysis}"
-        else:
-            prompt = MERGE_PROMPT.format(
-                text_analysis=text_analysis,
-                image_analysis=image_analysis,
-            )
-            try:
-                merged = await _safe_llm_call(llm, prompt, "tooler.merge")
-            except Exception:
-                merged = f"{text_analysis}\n\n## 图像分析补充\n{image_analysis}"
+        llm = get_chat_model("TOOLER_MERGE", default_model=_TOOLER_MERGE_MODEL, temperature=0.2)
+        prompt = MERGE_PROMPT.format(
+            text_analysis=text_analysis,
+            image_analysis=image_analysis,
+        )
+        logger.info("[tooler] merging text and image analysis with model %s", _TOOLER_MERGE_MODEL)
+        merged = await safe_llm_call(llm, prompt, "tooler.merge")
     else:
         image_analysis = ""
         merged = text_analysis
 
-    _log_stage("tooler.text", text_analysis)
+    log_stage(logger, "tooler.text", text_analysis)
     if image_analysis:
-        _log_stage("tooler.image", image_analysis)
-    _log_stage("tooler.merge", merged)
-    _log_stage("searcher", search_results)
+        log_stage(logger, "tooler.image", image_analysis)
+    log_stage(logger, "tooler.merge", merged)
+    log_stage(logger, "searcher", search_results)
     logger.info("[tooler] exit")
     await mark_stage(state["run_id"], "tooler", "done")
     await mark_stage(state["run_id"], "searcher", "done")
 
     return {
+        "messages": tool_messages,
         "medical_text_analysis": text_analysis,
         "medical_image_analysis": image_analysis,
         "merged_analysis": merged,
@@ -279,157 +430,52 @@ async def tooler_node(state: MedAgentState) -> dict:
     }
 
 
-
-# ── Searcher ────────────────────────────────────────────────────────
-async def searcher_node(state: MedAgentState) -> dict:
-    """Web + RAG search, then LLM summarisation."""
-    logger.info("[searcher] enter")
-    await mark_stage(state["run_id"], "searcher", "running")
-    analysis = state["merged_analysis"] or state.get("raw_text", "")
-    planning_hint = state.get("plan", "")
-    query = f"{planning_hint}\n{analysis}"[:240]
-
-    logger.info("[searcher] web_search begin")
-    web_results = web_search.invoke({"query": f"医学 {query}"})
-    logger.info("[searcher] web_search end")
-    logger.info("[searcher] rag_search begin")
-    rag_results = rag_search.invoke({"query": query})
-    logger.info("[searcher] rag_search end")
-    combined = f"## 网络搜索结果\n{web_results}\n\n## 知识库搜索结果\n{rag_results}"
-
-    llm = get_chat_model("SEARCHER", default_model="qwen-plus", temperature=0.2)
-    if llm is None:
-        _log_stage("searcher", combined)
-        logger.info("[searcher] exit (llm unavailable)")
-        await mark_stage(state["run_id"], "searcher", "done")
-        return {"search_results": combined}
-    prompt = SEARCH_SUMMARY_PROMPT.format(
-        analysis=_clip_text(analysis, _ANALYSIS_BUDGET),
-        search_results=_clip_text(combined, _SEARCH_BUDGET),
-    )
-    try:
-        response = await _safe_llm_call(llm, prompt, "searcher")
-    except Exception as exc:
-        fallback = f"{combined}\n\n## 检索总结\n检索总结模型暂不可用：{_err_text(exc)}"
-        _log_stage("searcher", fallback)
-        logger.info("[searcher] exit (llm error)")
-        await mark_stage(state["run_id"], "searcher", "done")
-        return {"search_results": fallback}
-    _log_stage("searcher", response)
-    logger.info("[searcher] exit")
-    await mark_stage(state["run_id"], "searcher", "done")
-    return {"search_results": response}
-
-
-# ── Planner ─────────────────────────────────────────────────────────
-async def planner_node(
-    state: MedAgentState,
-) -> Command[Literal["tooler", "reflector", "summarize"]]:
-    """Planner-centric orchestrator using Command + Send handoff."""
-    logger.info("[planner] enter")
-    await mark_stage(state["run_id"], "planner", "running")
-
-    llm = get_chat_model("PLANNER", default_model="qwen-plus", temperature=0.3)
-
-    def _fallback_plan() -> str:
-        return (
-            "当前无法调用规划模型。请先完成以下基础动作：\n"
-            "1. 规律作息与补水，记录症状变化\n"
-            "2. 规范用药并避免重复叠加\n"
-            "3. 症状持续或加重时尽快线下就医"
-        )
-
-    # 1) Initial todo list (non-blocking, no model call).
-    if not state.get("plan"):
-        if llm is None:
-            plan_text = _fallback_plan()
-        else:
-            init_prompt = PLAN_INIT_PROMPT.format(raw_text=_clip_text(state.get("raw_text", ""), 1200))
-            try:
-                plan_text = await _safe_llm_call(llm, init_prompt, "planner.init")
-            except Exception as exc:
-                plan_text = f"{_fallback_plan()}\n(初始化失败: {_err_text(exc)})"
-        _log_stage("planner.init", plan_text)
-        await mark_stage(state["run_id"], "planner", "done")
-        sends: list[Send] = [Send("tooler", dict(state))]
-        return Command(
-            goto=sends,
-            update={
-                "plan": plan_text,
-                "tools_dispatched": True,
-                "plan_updated": False,
-                "planner_decision": "",
-            },
-        )
-
-    # 2) Wait tool outputs; then update plan.
-    if not state.get("search_results") or (state.get("has_images") and not state.get("merged_analysis")):
-        await mark_stage(state["run_id"], "planner", "done")
-        return Command(goto="tooler")
-
-    if not state.get("plan_updated"):
-        analysis_context = state["merged_analysis"] or state.get("raw_text", "")
-        search_context = state["search_results"] or "（待后续检索补充）"
-        feedback = state.get("revision_feedback", "")
-        feedback_section = (
-            f"\n\n## 上一轮审查反馈（请据此改进方案）\n{feedback}" if feedback else ""
-        )
-        if llm is None:
-            response = state.get("plan", "") or _fallback_plan()
-        else:
-            prompt = (
-                PLAN_PROMPT.format(
-                    analysis=_clip_text(analysis_context, _ANALYSIS_BUDGET),
-                    search_results=_clip_text(search_context, _SEARCH_BUDGET),
-                )
-                + feedback_section
-            )
-            try:
-                response = await _safe_llm_call(llm, prompt, "planner.update")
-            except Exception as exc:
-                response = f"{state.get('plan', _fallback_plan())}\n(更新失败: {_err_text(exc)})"
-        _log_stage("planner.update", response)
-        await mark_stage(state["run_id"], "planner", "done")
-        return Command(
-            goto="reflector",
-            update={"plan": response, "plan_updated": True, "planner_decision": "REFLECT"},
-        )
-
-    await mark_stage(state["run_id"], "planner", "done")
-    if not state.get("reflection"):
-        return Command(goto="reflector", update={"planner_decision": "REFLECT"})
-    return Command(goto="summarize", update={"planner_decision": "SUMMARY"})
-
-
 # ── Reflector ───────────────────────────────────────────────────────
 async def reflector_node(state: MedAgentState) -> dict:
     """Review analysis + search + plan for consistency and accuracy."""
     logger.info("[reflector] enter")
     await mark_stage(state["run_id"], "reflector", "running")
-    llm = get_chat_model("REFLECTOR", default_model="qwen-plus", temperature=0.2)
-    if llm is None:
-        fallback = "当前无法调用反思校验模型，建议由医生进一步复核方案。"
-        _log_stage("reflector", fallback)
-        logger.info("[reflector] exit (llm unavailable)")
-        await mark_stage(state["run_id"], "reflector", "done")
-        return {"reflection": fallback}
+    llm = get_chat_model("REFLECTOR", default_model=_REFLECTOR_MODEL, temperature=0.2)
+    
     prompt = REFLECT_PROMPT.format(
-        analysis=_clip_text(state["merged_analysis"], _ANALYSIS_BUDGET),
-        search_results=_clip_text(state["search_results"], _SEARCH_BUDGET),
-        plan=_clip_text(state["plan"], _PLAN_BUDGET),
+        analysis=state["merged_analysis"],
+        search_results=state["search_results"],
+        plan=state["plan"],
     )
-    try:
-        response = await _safe_llm_call(llm, prompt, "reflector")
-    except Exception as exc:
-        fallback = "质检暂不可用（不影响主流程）"
-        _log_stage("reflector", fallback)
-        logger.info("[reflector] exit (llm error): %s", _err_text(exc))
-        await mark_stage(state["run_id"], "reflector", "done")
-        return {"reflection": fallback}
-    _log_stage("reflector", response)
+    
+    logger.info("[reflector] evaluating plan consistency via llm model=%s", _REFLECTOR_MODEL)
+
+    structured_llm = llm.with_structured_output(reflect_report)
+    raw_response = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+    report = (
+        raw_response
+        if isinstance(raw_response, reflect_report)
+        else reflect_report.model_validate(raw_response)
+    )
+
+    next_iteration = int(state.get("iteration", 0)) + 1
+    is_fail = report.quality_conclusion == "FAIL"
+    hit_limit = next_iteration >= _MAX_REFLECT_ITERATIONS
+    planner_decision = "REDO" if (is_fail and not hit_limit) else "SUMMARY"
+
+    fixes = "\n".join(f"- {item}" for item in report.minimal_corrections[:3])
+    reflection_text = (
+        f"1. 完整性检查：{report.completeness_check}\n"
+        f"2. 一致性检查：{report.consistency_check}\n"
+        f"3. 幻觉风险：{report.hallucination_risk}\n"
+        f"4. 最小修正建议：\n{fixes}\n"
+        f"5. 质检结论：{report.quality_conclusion}"
+    )
+
+    log_stage(logger, "reflector", reflection_text)
     logger.info("[reflector] exit")
     await mark_stage(state["run_id"], "reflector", "done")
-    return {"reflection": response}
+    update: dict[str, Any] = {
+        "reflection": reflection_text,
+        "iteration": next_iteration,
+        "planner_decision": planner_decision,
+    }
+    return update
 
 
 # ── Summarize ───────────────────────────────────────────────────────
@@ -439,51 +485,34 @@ async def summarize_node(state: MedAgentState) -> dict:
     await mark_stage(state["run_id"], "summarize", "running")
     # If supervisor already provided a direct summary, return it as-is.
     if state.get("summary"):
-        _log_stage("summarizer", state["summary"])
+        log_stage(logger, "summarizer", state["summary"])
         logger.info("[summarizer] exit (pre-filled summary)")
         await mark_stage(state["run_id"], "summarize", "done")
         return {"summary": state["summary"]}
 
-    llm = get_chat_model("SUMMARIZER", default_model="qwen-plus", temperature=0.2)
-    if llm is None:
-        fallback = (
-            "当前系统无法连接到总结模型，已返回基础流程结果。"
-            "请在模型可用后重试，或咨询专业医生获取最终意见。"
-        )
-        _log_stage("summarizer", fallback)
-        logger.info("[summarizer] exit (llm unavailable)")
-        await mark_stage(state["run_id"], "summarize", "done")
-        return {"summary": fallback}
+    llm = get_chat_model("SUMMARIZER", default_model=_SUMMARIZER_MODEL, temperature=0.2)
 
     if (state.get("query_intent") or "").upper() == "NON_MEDICAL":
         prompt = NON_MEDICAL_REPLY_PROMPT.format(user_text=state.get("raw_text", ""))
-        try:
-            response = await _safe_llm_call(llm, prompt, "summarizer.non_medical")
-        except Exception as exc:
-            response = (
-                "我在。你可以继续告诉我你的问题；如果有病历或检查内容，我也可以帮你解读。"
-                f"(错误信息: {_err_text(exc)})"
-            )
-        _log_stage("summarizer", response)
+        logger.info("[summarizer] generating non-medical reply via llm model=%s", _SUMMARIZER_MODEL)
+        response = await safe_llm_call(llm, prompt, "summarizer.non_medical")
+        messages = list(state.get("messages", []))
+        messages.append(AIMessage(content=response))
+        log_stage(logger, "summarizer", response)
         logger.info("[summarizer] exit (non-medical llm reply)")
         await mark_stage(state["run_id"], "summarize", "done")
-        return {"summary": response}
+        return {"summary": response, "messages": messages}
     prompt = SUMMARIZE_PROMPT.format(
-        analysis=_clip_text(state["merged_analysis"], _ANALYSIS_BUDGET),
-        search_results=_clip_text(state["search_results"], _SEARCH_BUDGET),
-        plan=_clip_text(state["plan"], _PLAN_BUDGET),
-        reflection=_clip_text(state["reflection"], _REFLECTION_BUDGET),
+        analysis=state["merged_analysis"],
+        search_results=state["search_results"],
+        plan=state["plan"],
+        reflection=state["reflection"],
     )
-    try:
-        response = await _safe_llm_call(llm, prompt, "summarizer")
-    except Exception as exc:
-        response = (
-            "总结模型暂不可用，以下为简要结论：\n"
-            f"- 解析结果、检索补充、计划与校验已完成。\n"
-            f"- 建议按计划执行，并在症状变化时及时复诊。\n"
-            f"(错误信息: {_err_text(exc)})"
-        )
-    _log_stage("summarizer", response)
+    
+    logger.info("[summarizer] generating final summary via llm model=%s", _SUMMARIZER_MODEL)
+    response = await safe_llm_call(llm, prompt, "summarizer")
+        
+    log_stage(logger, "summarizer", response)
     logger.info("[summarizer] exit")
     await mark_stage(state["run_id"], "summarize", "done")
     return {"summary": response}

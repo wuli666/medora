@@ -1,0 +1,17 @@
+aiosqlite
+chromadb
+fastapi
+langchain-core
+langchain-ollama
+langchain-openai
+langgraph
+pydantic
+pydantic-settings
+PyMuPDF
+python-dotenv
+python-multipart
+tavily-python
+uvicorn[standard]
+
+# test
+pytest

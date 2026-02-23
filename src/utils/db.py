@@ -3,7 +3,9 @@ import os
 
 import aiosqlite
 
-DB_PATH = os.getenv("DB_PATH", "./data/patients.db")
+from src.config.settings import settings
+
+DB_PATH = settings.DB_PATH
 
 
 async def init_db():
