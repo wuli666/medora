@@ -181,7 +181,6 @@ async def run_multi_agent(
         "merged_analysis": "",
         "search_results": "",
         "plan": "",
-        "plan_updated": False,
         "planner_decision": "",
         "tools_dispatched": False,
         "planner_tool_attempts": 0,
@@ -189,7 +188,6 @@ async def run_multi_agent(
         "summary": "",
         "tool_skipped": False,
         "iteration": 0,
-        "revision_feedback": "",
         "query_intent": "",
     }
 
