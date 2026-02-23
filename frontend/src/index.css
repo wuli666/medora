@@ -161,9 +161,8 @@
     pointer-events: none;
     background:
       linear-gradient(to right, hsla(var(--foreground) / 0.05) 1px, transparent 1px) 0 0 / 44px 44px,
-      linear-gradient(to bottom, hsla(var(--foreground) / 0.04) 1px, transparent 1px) 0 0 / 44px 44px;
-    mask-image: radial-gradient(ellipse at center, black 38%, transparent 82%);
-    -webkit-mask-image: radial-gradient(ellipse at center, black 38%, transparent 82%);
+      linear-gradient(to bottom, hsla(var(--foreground) / 0.04) 1px, transparent 1px) 0 0 / 44px 44px,
+      hsl(var(--background));
   }
 
   .landing-arc {
