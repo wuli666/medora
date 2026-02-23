@@ -8,7 +8,9 @@
     <img src="https://img.shields.io/badge/python-≥3.11-blue?logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <img src="https://img.shields.io/badge/LangGraph-1.0+-purple?style=flat&logo=langgraph&logoColor=white" alt="LangGraph">
-    [ENGLISH](./README.md) | 中文
+
+<p align="center">
+    <a href="README.md">English</a> | <a href="README.zh.md">中文</a>
 </p>
 
 https://github.com/user-attachments/assets/7c7dc6c9-baf6-4bb8-a335-5f1f880797fa
