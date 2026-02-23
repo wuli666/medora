@@ -18,7 +18,7 @@ _PROMPT_FILES: dict[str, str] = {
 }
 
 
-def _load_prompt_file(filename: str) -> str:
+def load_prompt_file(filename: str) -> str:
     path = _PROMPTS_DIR / filename
     try:
         return path.read_text(encoding="utf-8")
@@ -26,19 +26,19 @@ def _load_prompt_file(filename: str) -> str:
         raise RuntimeError(f"Failed to load prompt file: {path}") from exc
 
 
-MEDGEMMA_TEXT_PROMPT = _load_prompt_file(_PROMPT_FILES["MEDGEMMA_TEXT_PROMPT"])
-MEDGEMMA_IMAGE_PROMPT = _load_prompt_file(_PROMPT_FILES["MEDGEMMA_IMAGE_PROMPT"])
-MERGE_PROMPT = _load_prompt_file(_PROMPT_FILES["MERGE_PROMPT"])
-SEARCH_SUMMARY_PROMPT = _load_prompt_file(_PROMPT_FILES["SEARCH_SUMMARY_PROMPT"])
-PLAN_PROMPT = _load_prompt_file(_PROMPT_FILES["PLAN_PROMPT"])
-PLAN_INIT_PROMPT = _load_prompt_file(_PROMPT_FILES["PLAN_INIT_PROMPT"])
-PLAN_TOOL_PROMPT = _load_prompt_file(_PROMPT_FILES["PLAN_TOOL_PROMPT"])
-REFLECT_PROMPT = _load_prompt_file(_PROMPT_FILES["REFLECT_PROMPT"])
-SUMMARIZE_PROMPT = _load_prompt_file(_PROMPT_FILES["SUMMARIZE_PROMPT"])
-NON_MEDICAL_REPLY_PROMPT = _load_prompt_file(_PROMPT_FILES["NON_MEDICAL_REPLY_PROMPT"])
-SUPERVISOR_EVAL_PROMPT = _load_prompt_file(_PROMPT_FILES["SUPERVISOR_EVAL_PROMPT"])
-PLANNER_DECIDE_PROMPT = _load_prompt_file(_PROMPT_FILES["PLANNER_DECIDE_PROMPT"])
-INTENT_CLASSIFY_PROMPT = _load_prompt_file(_PROMPT_FILES["INTENT_CLASSIFY_PROMPT"])
+MEDGEMMA_TEXT_PROMPT = load_prompt_file(_PROMPT_FILES["MEDGEMMA_TEXT_PROMPT"])
+MEDGEMMA_IMAGE_PROMPT = load_prompt_file(_PROMPT_FILES["MEDGEMMA_IMAGE_PROMPT"])
+MERGE_PROMPT = load_prompt_file(_PROMPT_FILES["MERGE_PROMPT"])
+SEARCH_SUMMARY_PROMPT = load_prompt_file(_PROMPT_FILES["SEARCH_SUMMARY_PROMPT"])
+PLAN_PROMPT = load_prompt_file(_PROMPT_FILES["PLAN_PROMPT"])
+PLAN_INIT_PROMPT = load_prompt_file(_PROMPT_FILES["PLAN_INIT_PROMPT"])
+PLAN_TOOL_PROMPT = load_prompt_file(_PROMPT_FILES["PLAN_TOOL_PROMPT"])
+REFLECT_PROMPT = load_prompt_file(_PROMPT_FILES["REFLECT_PROMPT"])
+SUMMARIZE_PROMPT = load_prompt_file(_PROMPT_FILES["SUMMARIZE_PROMPT"])
+NON_MEDICAL_REPLY_PROMPT = load_prompt_file(_PROMPT_FILES["NON_MEDICAL_REPLY_PROMPT"])
+SUPERVISOR_EVAL_PROMPT = load_prompt_file(_PROMPT_FILES["SUPERVISOR_EVAL_PROMPT"])
+PLANNER_DECIDE_PROMPT = load_prompt_file(_PROMPT_FILES["PLANNER_DECIDE_PROMPT"])
+INTENT_CLASSIFY_PROMPT = load_prompt_file(_PROMPT_FILES["INTENT_CLASSIFY_PROMPT"])
 
 
 STRUCTURED_EXTRACTION_SYSTEM_PROMPT = """You are a medical information extraction expert. Your task is to analyze medical records and extract structured information in JSON format.
