@@ -80,25 +80,14 @@ def test_planner_retries_when_no_tool_calls_then_fallback_to_no_tool_path(
     monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
 
     state = _base_state()
-    first = asyncio.run(nodes.planner_node(state))
-    assert first.goto == "planner"
-    assert first.update["planner_tool_attempts"] == 1
-    assert first.update.get("tools_dispatched", False) is False
-    state.update(first.update)
-
-    second = asyncio.run(nodes.planner_node(state))
-    assert second.goto == "planner"
-    assert second.update["planner_tool_attempts"] == 2
-    assert second.update.get("tools_dispatched", False) is False
-    state.update(second.update)
-
-    third = asyncio.run(nodes.planner_node(state))
-    assert third.goto == "planner"
-    assert third.update["tools_dispatched"] is True
-    assert third.update["tool_skipped"] is True
-    assert third.update["planner_tool_attempts"] == 3
-    assert third.update["search_results"] == "（未执行检索，基于已有信息生成）"
-    assert third.update["merged_analysis"] == state["raw_text"]
+    result = asyncio.run(nodes.planner_node(state))
+    assert result.goto == "reflector"
+    assert result.update["tools_dispatched"] is True
+    assert result.update["tool_skipped"] is True
+    assert result.update["planner_tool_attempts"] == 3
+    assert result.update["search_results"] == "（未执行检索，基于已有信息生成）"
+    assert result.update["merged_analysis"] == state["raw_text"]
+    assert result.update["planner_decision"] == "REFLECT"
 
 
 def test_tooler_node_no_tool_calls_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -289,9 +278,38 @@ def test_reflector_summary_when_limit_reached(monkeypatch: pytest.MonkeyPatch) -
     assert result["planner_decision"] == "SUMMARY"
 
 
-def test_planner_routes_redo_to_replan(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_planner_redo_has_high_priority_and_replans_once_then_tooler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"planner_update_calls": 0}
+
+    class FakeToolBoundLLM:
+        async def ainvoke(self, _messages):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "web_search",
+                        "args": {"query": "高血压 复诊"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    class FakePlannerLLM:
+        def bind_tools(self, _tools):
+            return FakeToolBoundLLM()
+
+    async def _fake_safe_llm_call(_llm, _prompt: str, stage: str) -> str:
+        if stage == "planner.update":
+            captured["planner_update_calls"] += 1
+            return "重写后的计划"
+        return "unused"
+
     monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
+    monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
     state = _base_state()
     state.update(
         {
@@ -301,10 +319,11 @@ def test_planner_routes_redo_to_replan(monkeypatch: pytest.MonkeyPatch) -> None:
         }
     )
     result = asyncio.run(nodes.planner_node(state))
-    assert result.goto == "planner"
+    assert result.goto == "tooler"
+    assert captured["planner_update_calls"] == 1
+    assert result.update["plan"] == "重写后的计划"
     assert result.update["planner_decision"] == ""
-    assert result.update["tools_dispatched"] is False
-    assert result.update["planner_tool_attempts"] == 0
+    assert result.update["tools_dispatched"] is True
     assert result.update["tool_skipped"] is False
 
 
@@ -321,6 +340,96 @@ def test_planner_routes_summary_when_reflector_approved(monkeypatch: pytest.Monk
     )
     result = asyncio.run(nodes.planner_node(state))
     assert result.goto == "summarize"
+
+
+def test_planner_summary_short_circuit(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {"safe_calls": 0, "tool_calls": 0}
+
+    class FakeToolBoundLLM:
+        async def ainvoke(self, _messages):
+            captured["tool_calls"] += 1
+            return AIMessage(content="", tool_calls=[])
+
+    class FakePlannerLLM:
+        def bind_tools(self, _tools):
+            return FakeToolBoundLLM()
+
+    async def _fake_safe_llm_call(_llm, _prompt: str, _stage: str) -> str:
+        captured["safe_calls"] += 1
+        return "should-not-run"
+
+    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
+    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
+    monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
+
+    state = _base_state()
+    state.update({"tools_dispatched": True, "planner_decision": "SUMMARY"})
+    result = asyncio.run(nodes.planner_node(state))
+    assert result.goto == "summarize"
+    assert captured["safe_calls"] == 0
+    assert captured["tool_calls"] == 0
+
+
+def test_planner_init_plan_then_dispatch_without_self_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeToolBoundLLM:
+        async def ainvoke(self, _messages):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "web_search",
+                        "args": {"query": "糖尿病 随访"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    class FakePlannerLLM:
+        def bind_tools(self, _tools):
+            return FakeToolBoundLLM()
+
+    async def _fake_safe_llm_call(_llm, _prompt: str, stage: str) -> str:
+        if stage == "planner.init":
+            return "初始化计划"
+        return "unused"
+
+    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
+    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
+    monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
+
+    state = _base_state()
+    state["plan"] = ""
+    result = asyncio.run(nodes.planner_node(state))
+    assert result.goto == "tooler"
+    assert result.update["plan"] == "初始化计划"
+    assert result.update["tools_dispatched"] is True
+
+
+def test_reflector_fail_redo_pass_summary_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    fail_result = _run_reflector_with_payload(
+        monkeypatch,
+        {
+            "completeness_check": "缺失近期血压记录",
+            "consistency_check": "计划与检索建议不一致",
+            "hallucination_risk": "部分结论证据不足",
+            "minimal_corrections": ["补齐血压日志"],
+            "quality_conclusion": "FAIL",
+        },
+    )
+    assert fail_result["planner_decision"] == "REDO"
+
+    pass_result = _run_reflector_with_payload(
+        monkeypatch,
+        {
+            "completeness_check": "无明显缺失",
+            "consistency_check": "未见明显冲突",
+            "hallucination_risk": "未见明显幻觉风险",
+            "minimal_corrections": ["维持当前管理"],
+            "quality_conclusion": "PASS",
+        },
+    )
+    assert pass_result["planner_decision"] == "SUMMARY"
 
 
 def test_planner_routes_reflector_on_unknown_decision(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -369,24 +478,42 @@ def test_planner_toolcall_prompt_includes_reflection(monkeypatch: pytest.MonkeyP
 def test_planner_update_prompt_includes_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {"prompt": ""}
 
+    class FakeToolBoundLLM:
+        async def ainvoke(self, _messages):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "web_search",
+                        "args": {"query": "检查建议"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    class FakePlannerLLM:
+        def bind_tools(self, _tools):
+            return FakeToolBoundLLM()
+
     async def _fake_safe_llm_call(_llm, prompt: str, stage: str) -> str:
         if stage == "planner.update":
             captured["prompt"] = prompt
         return "更新后的计划"
 
     monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
     monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
 
     state = _base_state()
     state.update(
         {
             "tools_dispatched": True,
-            "planner_decision": "REFLECT",
+            "planner_decision": "REDO",
             "reflection": "4. 最小修正建议：补充检验指标",
         }
     )
     result = asyncio.run(nodes.planner_node(state))
-    assert result.goto == "reflector"
+    assert result.goto == "tooler"
     assert "上一轮质检反馈" in captured["prompt"]
     assert "4. 最小修正建议：补充检验指标" in captured["prompt"]

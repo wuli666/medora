@@ -101,8 +101,8 @@ async def supervisor_node(
         logger.info("[supervisor] route=summarize (cached non-medical)")
         await mark_stage(run_id, "quick_router", "done")
         return Command(
-            goto="summarize",
             update={"query_intent": intent, "messages": messages},
+            goto="summarize",
         )
 
     if not intent:
@@ -181,16 +181,47 @@ async def planner_node(
     await mark_stage(run_id, "planner", "running")
 
     llm = get_chat_model("PLANNER", default_model=_PLANNER_MODEL, temperature=0.3)
-    fallback_plan = (
-        "当前无法调用规划模型。请先完成以下基础动作：\n"
-        "1. 规律作息与补水，记录症状变化\n"
-        "2. 规范用药并避免重复叠加\n"
-        "3. 症状持续或加重时尽快线下就医"
-    )
+
     plan_text = str(state.get("plan", "")).strip()
     tools_dispatched = bool(state.get("tools_dispatched"))
     decision = str(state.get("planner_decision", "")).strip().upper()
     reflection_text = str(state.get("reflection", "")).strip()
+    pre_updates: dict[str, Any] = {}
+
+    if decision == "SUMMARY":
+        logger.info("[planner] route=summarize (reflector approved)")
+        await mark_stage(run_id, "planner", "done")
+        return Command(update={"planner_decision": "SUMMARY"}, goto="summarize")
+
+    if decision == "REDO":
+        logger.info("[planner] decision=REDO, re-planning before tool dispatch")
+        analysis_context = state.get("merged_analysis", "") or state.get("raw_text", "")
+        search_context = state.get("search_results", "") or "（未检索到外部证据）"
+        reflection_section = (
+            f"\n\n## 上一轮质检反馈（请据此修正计划）\n{reflection_text}"
+            if reflection_text
+            else ""
+        )
+        prompt = (
+            PLAN_PROMPT.format(
+                analysis=analysis_context,
+                search_results=search_context,
+            )
+            + reflection_section
+        )
+        response = await safe_llm_call(llm, prompt, "planner.update")
+        log_stage(logger, "planner.update", response)
+        plan_text = response
+        tools_dispatched = False
+        pre_updates.update(
+            {
+                "plan": response,
+                "planner_decision": "",
+                "tools_dispatched": False,
+                "planner_tool_attempts": 0,
+                "tool_skipped": False,
+            }
+        )
 
     if not plan_text:
         # INIT_PLAN
@@ -198,20 +229,19 @@ async def planner_node(
         init_prompt = PLAN_INIT_PROMPT.format(raw_text=state.get("raw_text", ""))
         plan_text = await safe_llm_call(llm, init_prompt, "planner.init")
         log_stage(logger, "planner.init", plan_text)
-        await mark_stage(run_id, "planner", "done")
-        return Command(
-            goto="planner",
-            update={
+        tools_dispatched = False
+        pre_updates.update(
+            {
                 "plan": plan_text,
                 "tools_dispatched": False,
                 "planner_decision": "",
                 "planner_tool_attempts": 0,
-            },
+                "tool_skipped": False,
+            }
         )
 
     if not tools_dispatched:
         # DISPATCH_TOOLS
-        ai_response: AIMessage | None = None
         llm_with_tools = llm.bind_tools(tools)
 
         logger.info("[planner] requesting tool calls via llm")
@@ -223,99 +253,56 @@ async def planner_node(
 
         planner_human = (
             f"用户输入：{state.get('raw_text', '')}\n\n"
-            f"当前执行清单：{state.get('plan', '')}\n\n"
+            f"当前执行清单：{plan_text}\n\n"
             f"请根据需要调用工具。{reflection_section}"
         )
 
-        response = await llm_with_tools.ainvoke(
-            [
-                SystemMessage(content=PLAN_TOOL_PROMPT),
-                HumanMessage(content=planner_human),
-            ]
-        )
-        if isinstance(response, AIMessage):
-            ai_response = response
-
-        if ai_response is not None and ai_response.tool_calls:
-            await mark_stage(run_id, "planner", "done")
-            return Command(
-                goto="tooler",
-                update={
-                    "messages": [ai_response],
-                    "tools_dispatched": True,
-                },
+        attempts = 0
+        for attempt in range(1, _MAX_TOOL_CALL_RETRIES + 2):
+            attempts = attempt
+            response = await llm_with_tools.ainvoke(
+                [
+                    SystemMessage(content=PLAN_TOOL_PROMPT),
+                    HumanMessage(content=planner_human),
+                ]
             )
+            ai_response = response if isinstance(response, AIMessage) else None
 
-        attempts = int(state.get("planner_tool_attempts", 0)) + 1
-        if attempts <= _MAX_TOOL_CALL_RETRIES:
-            logger.info("[planner] no tool calls detected, retrying attempt=%s", attempts)
-            await mark_stage(run_id, "planner", "done")
-            return Command(
-                goto="planner",
-                update={"planner_tool_attempts": attempts},
-            )
+            if ai_response is not None and ai_response.tool_calls:
+                await mark_stage(run_id, "planner", "done")
+                return Command(
+                    update={
+                        **pre_updates,
+                        "messages": [ai_response],
+                        "tools_dispatched": True,
+                        "planner_tool_attempts": attempts,
+                    },
+                    goto="tooler",
+                )
+
+            if attempt <= _MAX_TOOL_CALL_RETRIES:
+                logger.info("[planner] no tool calls detected, retrying attempt=%s", attempt)
 
         logger.warning("[planner] no tool calls after %s attempts, fallback to no-tool planning", attempts)
         fallback_search = state.get("search_results", "") or _NO_TOOL_SEARCH_FALLBACK
         fallback_merged = state.get("merged_analysis", "") or state.get("raw_text", "")
         await mark_stage(run_id, "planner", "done")
         return Command(
-            goto="planner",
             update={
+                **pre_updates,
                 "tools_dispatched": True,
                 "tool_skipped": True,
                 "planner_tool_attempts": attempts,
                 "search_results": fallback_search,
                 "merged_analysis": fallback_merged,
+                "planner_decision": "REFLECT",
             },
-        )
-
-    if decision in {"", "REFLECT"}:
-        # UPDATE_PLAN
-        analysis_context = state.get("merged_analysis", "") or state.get("raw_text", "")
-        search_context = state.get("search_results", "") or "（未检索到外部证据）"
-        reflection_section = (
-            f"\n\n## 上一轮质检反馈（请据此修正计划）\n{reflection_text}"
-            if reflection_text
-            else ""
-        )
-        logger.info("[planner] updating plan via llm model=%s", _PLANNER_MODEL)
-        prompt = (
-            PLAN_PROMPT.format(
-                analysis=analysis_context,
-                search_results=search_context,
-            )
-            + reflection_section
-        )
-        
-        logger.info("[planner] plan update with decision=%s", decision or "empty")
-        response = await safe_llm_call(llm, prompt, "planner.update")
-        
-        log_stage(logger, "planner.update", response)
-        await mark_stage(run_id, "planner", "done")
-        return Command(
             goto="reflector",
-            update={"plan": response, "planner_decision": "REFLECT"},
         )
 
-    # ROUTE
     await mark_stage(run_id, "planner", "done")
-    if decision == "REDO":
-        logger.info("[planner] route=planner (redo requested by reflector)")
-        return Command(
-            goto="planner",
-            update={
-                "planner_decision": "",
-                "tools_dispatched": False,
-                "planner_tool_attempts": 0,
-                "tool_skipped": False,
-            },
-        )
-    if decision == "SUMMARY":
-        logger.info("[planner] route=summarize (reflector approved)")
-        return Command(goto="summarize", update={"planner_decision": "SUMMARY"})
-    logger.info("[planner] route=reflector (default decision)")
-    return Command(goto="reflector", update={"planner_decision": "REFLECT"})
+    logger.info("[planner] route=reflector (tools already dispatched)")
+    return Command(update={**pre_updates, "planner_decision": "REFLECT"}, goto="reflector")
 
 
 # ── Tooler (MedGemma text ∥ image → merge) ─────────────────────────
@@ -467,8 +454,9 @@ async def reflector_node(state: MedAgentState) -> dict:
     )
 
     next_iteration = int(state.get("iteration", 0)) + 1
-    needs_redo = report.quality_conclusion == "PASS" or next_iteration >= _MAX_REFLECT_ITERATIONS
-    planner_decision = "REDO" if needs_redo else "SUMMARY"
+    is_fail = report.quality_conclusion == "FAIL"
+    hit_limit = next_iteration >= _MAX_REFLECT_ITERATIONS
+    planner_decision = "REDO" if (is_fail and not hit_limit) else "SUMMARY"
 
     fixes = "\n".join(f"- {item}" for item in report.minimal_corrections[:3])
     reflection_text = (
