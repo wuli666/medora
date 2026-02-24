@@ -25,10 +25,12 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-if [[ -n "${CONDA_PREFIX:-}" ]]; then
-  PYTHON="${CONDA_PREFIX}/bin/python"
+if [[ -x "${ROOT_DIR}/.venv/bin/python" ]]; then
+  PYTHON="${ROOT_DIR}/.venv/bin/python"
 elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PYTHON="${VIRTUAL_ENV}/bin/python"
+elif [[ -n "${CONDA_PREFIX:-}" ]]; then
+  PYTHON="${CONDA_PREFIX}/bin/python"
 else
   PYTHON="$(command -v python3 || command -v python)"
 fi
@@ -37,6 +39,12 @@ if [[ -z "${PYTHON}" || ! -x "${PYTHON}" ]]; then
   exit 1
 fi
 echo "Using Python: ${PYTHON}"
+
+if ! "${PYTHON}" -c "import uvicorn" >/dev/null 2>&1; then
+  echo "Missing 'uvicorn' in: ${PYTHON}"
+  echo "Install backend deps first: ${PYTHON} -m pip install -r requirements.txt"
+  exit 1
+fi
 
 if [[ ! -d "${ROOT_DIR}/frontend/node_modules" ]]; then
   echo "Missing frontend/node_modules"
