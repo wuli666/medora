@@ -73,7 +73,7 @@ type MultiAgentResponse = {
 type UiMessage = ChatMessage & {
   stages?: StageItem[];
 };
-type LoadingStage = { key: string; label: string };
+type LoadingStage = { key: string; label: string; status?: string; content?: string };
 
 // 日历事件类型
 type CalendarEvent = {
@@ -133,8 +133,10 @@ const STAGE_CLASS: Record<string, string> = {
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
-const REQUEST_TIMEOUT_MS = 120000;
-const DEFAULT_LOADING_FLOW: LoadingStage[] = [{ key: "quick_router", label: "意图识别" }];
+const REQUEST_TIMEOUT_MS = 1200000;
+const DEFAULT_LOADING_FLOW: LoadingStage[] = [
+  { key: "quick_router", label: "意图识别", status: "running", content: "" },
+];
 
 const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[] => {
   if (payload.stages && payload.stages.length > 0) return payload.stages;
@@ -207,7 +209,12 @@ const Chat = () => {
 
   const updateTimelineFromStages = (stages: StageItem[]) => {
     if (!stages || stages.length === 0) return;
-    const flow = stages.map((s) => ({ key: s.key, label: s.label }));
+    const flow = stages.map((s) => ({
+      key: s.key,
+      label: s.label,
+      status: s.status,
+      content: s.content,
+    }));
     setLoadingFlow(flow);
 
     let runningIdx = stages.findIndex((s) => s.status === "running");
@@ -822,9 +829,11 @@ const Chat = () => {
                 </div>
                 <div className="mt-4 space-y-2">
                   {loadingFlow.slice(0, loadingVisibleCount).map((stage, idx) => {
-                    const isDone = idx < loadingStageIdx;
+                    const isDone = idx < loadingStageIdx || ["done", "skipped", "error"].includes(stage.status || "");
                     const isCurrent = idx === loadingStageIdx;
-                    const isLast = idx === loadingFlow.length - 1;
+                    const stageText = (stage.content || "").trim();
+                    const displayContent = stageText
+                      || (isCurrent ? "思考中" : (stage.status === "skipped" ? "已跳过该阶段" : ""));
                     return (
                       <div key={stage.key} className="flex items-start gap-3">
                         <div className="relative flex flex-col items-center">
@@ -839,7 +848,7 @@ const Chat = () => {
                             ].join(" ")}
                             style={{ opacity: isCurrent ? 1 : 0.5 }}
                           />
-                          {!isLast && (
+                          {idx !== loadingVisibleCount - 1 && (
                             <span
                               className={[
                                 "mt-1 w-px h-6",
@@ -848,16 +857,25 @@ const Chat = () => {
                             />
                           )}
                         </div>
-                            <div
-                              className={[
-                                "text-xs px-2 py-1 rounded-md transition-colors",
-                                STAGE_CLASS[stage.key] || "bg-muted/50",
-                                isCurrent ? "font-normal" : "font-light",
-                              ].join(" ")}
-                              style={{ color: '#0e0b40ff', opacity: isCurrent ? 1 : 0.5}}
-                            >
-                              {stage.label}
-                            </div>
+                        <div
+                          className={`rounded-xl p-3 w-full ${STAGE_CLASS[stage.key] || "bg-muted/50"}`}
+                          style={{
+                            backdropFilter: 'blur(20px)',
+                            WebkitBackdropFilter: 'blur(20px)',
+                            background: 'rgba(255, 255, 255, 0.6)',
+                            boxShadow: '0 8px 24px rgba(255, 255, 255, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.36)',
+                            opacity: isCurrent ? 1 : 0.6,
+                          }}
+                        >
+                          <p className="text-xs font-semibold" style={{ color: '#0e0b40ff' }}>
+                            {stage.label}
+                          </p>
+                          {displayContent && (
+                            <p className="text-xs mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words" style={{ color: '#0e0b40ff' }}>
+                              {displayContent}
+                            </p>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
