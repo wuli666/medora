@@ -22,7 +22,7 @@ https://github.com/user-attachments/assets/7c7dc6c9-baf6-4bb8-a335-5f1f880797fa
 ## 🏗️ 系统架构
 
 <p align="center">
-  <img src="arch.png" alt="nanobot architecture" width="800">
+  <img src="arch.gif" alt="nanobot architecture" width="800">
 </p>
 
 ## ✨ 核心亮点

@@ -23,7 +23,7 @@ Chronic diseases have become a major global public health burden, accounting for
 ## 🏗️ System Architecture
 
 <p align="center">
-  <img src="arch.png" alt="architecture" width="800">
+  <img src="arch.gif" alt="architecture" width="800">
 </p>
 
 ## ✨ Key Highlights
