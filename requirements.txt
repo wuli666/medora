@@ -7,11 +7,10 @@ langchain-openai
 langgraph
 pydantic
 pydantic-settings
-magic-pdf[full]
+mineru[all]
 python-dotenv
 python-multipart
 tavily-python
 uvicorn[standard]
-mineru[all]
 # test
 pytest
