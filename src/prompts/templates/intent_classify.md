@@ -7,6 +7,3 @@
 只允许输出一个标签，不要输出解释：
 - MEDICAL
 - NON_MEDICAL
-
-用户输入：
-{user_text}

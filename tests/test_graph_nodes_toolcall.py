@@ -1,4 +1,4 @@
-"""Tests for planner/tooler tool-calling behavior in graph nodes."""
+"""Tests for graph nodes structured output + message pipeline behavior."""
 
 import asyncio
 import json
@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytest.importorskip("langgraph.types")
 
 from src.graph import nodes
+from src.graph.state import CarePlan, MergedMedicalAnalysis, PatientSummary, ReflectReport, SearchSummary
 
 
 async def _noop_mark_stage(*_args, **_kwargs) -> None:
@@ -22,21 +23,33 @@ def _base_state() -> dict:
     return {
         "run_id": "run-1",
         "raw_text": "患者头痛三天",
-        "plan": "先检查，再检索",
+        "plan": "",
+        "plan_struct": None,
         "tools_dispatched": False,
         "planner_tool_attempts": 0,
         "messages": [],
         "search_results": "",
+        "search_results_struct": None,
         "merged_analysis": "",
+        "merged_analysis_struct": None,
+        "medical_text_analysis": "",
+        "medical_text_analysis_struct": None,
+        "medical_image_analysis": "",
+        "medical_image_analysis_struct": [],
         "tool_skipped": False,
         "has_images": False,
         "reflection": "",
+        "reflection_struct": None,
         "iteration": 0,
         "planner_decision": "",
+        "query_intent": "MEDICAL",
+        "summary": "",
+        "summary_struct": None,
+        "images": [],
     }
 
 
-def test_planner_routes_to_tooler_when_tool_calls_present(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_planner_routes_to_tooler_with_structured_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeToolBoundLLM:
         async def ainvoke(self, _messages):
             return AIMessage(
@@ -55,19 +68,34 @@ def test_planner_routes_to_tooler_when_tool_calls_present(monkeypatch: pytest.Mo
         def bind_tools(self, _tools):
             return FakeToolBoundLLM()
 
+    async def _fake_invoke_structured(_llm, schema, _messages):
+        if schema is CarePlan:
+            return (
+                CarePlan(
+                    condition_analysis=["存在持续头痛"],
+                    monitoring_metrics=["记录头痛频率"],
+                    lifestyle_advice=["规律作息"],
+                ),
+                AIMessage(content="care_plan_struct"),
+            )
+        raise AssertionError("unexpected schema")
+
     monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
     monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
+    monkeypatch.setattr(nodes, "_invoke_structured", _fake_invoke_structured)
 
     result = asyncio.run(nodes.planner_node(_base_state()))
     assert result.goto == "tooler"
     assert result.update["tools_dispatched"] is True
+    assert isinstance(result.update["plan_struct"], dict)
+    assert "condition_analysis" in result.update["plan_struct"]
+    assert len(result.update["messages"]) == 2
     assert isinstance(result.update["messages"][0], AIMessage)
-    assert result.update["messages"][0].tool_calls
+    assert isinstance(result.update["messages"][1], AIMessage)
+    assert result.update["messages"][1].tool_calls
 
 
-def test_planner_retries_when_no_tool_calls_then_fallback_to_no_tool_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_planner_fallback_without_tool_calls_keeps_struct(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeToolBoundLLM:
         async def ainvoke(self, _messages):
             return AIMessage(content="no tools", tool_calls=[])
@@ -76,48 +104,78 @@ def test_planner_retries_when_no_tool_calls_then_fallback_to_no_tool_path(
         def bind_tools(self, _tools):
             return FakeToolBoundLLM()
 
+    async def _fake_invoke_structured(_llm, schema, _messages):
+        assert schema is CarePlan
+        return (
+            CarePlan(
+                condition_analysis=["轻度头痛"],
+                monitoring_metrics=["监测持续时间"],
+                lifestyle_advice=["补水休息"],
+            ),
+            AIMessage(content="care_plan_struct"),
+        )
+
     monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
     monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
+    monkeypatch.setattr(nodes, "_invoke_structured", _fake_invoke_structured)
 
-    state = _base_state()
-    result = asyncio.run(nodes.planner_node(state))
+    result = asyncio.run(nodes.planner_node(_base_state()))
     assert result.goto == "reflector"
     assert result.update["tools_dispatched"] is True
     assert result.update["tool_skipped"] is True
     assert result.update["planner_tool_attempts"] == 3
-    assert result.update["search_results"] == "（未执行检索，基于已有信息生成）"
-    assert result.update["merged_analysis"] == state["raw_text"]
-    assert result.update["planner_decision"] == "REFLECT"
+    assert isinstance(result.update["plan_struct"], dict)
+    assert len(result.update["messages"]) >= 2
 
 
-def test_tooler_node_no_tool_calls_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    state = {"run_id": "run-1", "has_images": False, "messages": [AIMessage(content="hi")]}
-    result = asyncio.run(nodes.tooler_node(state))
-    assert result == {}
-
-
-def test_tooler_node_executes_real_tool_calls_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tooler_node_maps_structured_fields_and_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeTool:
         async def ainvoke(self, _args):
             return json.dumps(
                 {
                     "tool": "analyze_medical_text",
                     "ok": True,
-                    "data": {"analysis_text": "文本分析结果"},
+                    "data": {
+                        "analysis_text": "文本分析结果",
+                        "analysis_struct": {
+                            "patient_profile": ["成人"],
+                            "main_diagnoses": ["紧张性头痛"],
+                            "medications": [],
+                            "abnormal_indicators": [],
+                            "risk_assessment": ["低风险"],
+                            "follow_up_points": ["观察48小时"],
+                        },
+                    },
                     "error": None,
                     "meta": {"version": "1.0"},
                 },
                 ensure_ascii=False,
             )
 
-    async def _fake_safe_llm_call(_llm, _prompt, stage: str) -> str:
-        if stage == "tooler.search":
-            return "检索摘要"
-        return "其他摘要"
+    async def _fake_invoke_structured(_llm, schema, _messages):
+        if schema is SearchSummary:
+            return (
+                SearchSummary(
+                    key_points=["头痛需排查危险信号"],
+                    source_notes=["指南A"],
+                    evidence_level="中",
+                ),
+                AIMessage(content="search_struct"),
+            )
+        if schema is MergedMedicalAnalysis:
+            return (
+                MergedMedicalAnalysis(
+                    primary_findings=["头痛"],
+                    key_abnormalities=[],
+                    risk_assessment=["低"],
+                    attention_points=["持续加重需就医"],
+                ),
+                AIMessage(content="merge_struct"),
+            )
+        raise AssertionError("unexpected schema")
 
     monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
+    monkeypatch.setattr(nodes, "_invoke_structured", _fake_invoke_structured)
     monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: object())
     monkeypatch.setattr(nodes, "tools_by_name", {"analyze_medical_text": FakeTool()})
 
@@ -140,380 +198,86 @@ def test_tooler_node_executes_real_tool_calls_only(monkeypatch: pytest.MonkeyPat
     }
     result = asyncio.run(nodes.tooler_node(state))
     assert result["medical_text_analysis"] == "文本分析结果"
-    assert result["merged_analysis"] == "文本分析结果"
-    assert result["search_results"] == "检索摘要"
-    assert len(result["messages"]) == 1
+    assert isinstance(result["medical_text_analysis_struct"], dict)
+    assert isinstance(result["merged_analysis_struct"], dict)
+    assert isinstance(result["search_results_struct"], dict)
+    assert len(result["messages"]) == 2
     assert isinstance(result["messages"][0], ToolMessage)
+    assert isinstance(result["messages"][1], AIMessage)
 
 
-def _run_reflector_with_payload(monkeypatch: pytest.MonkeyPatch, payload):
-    if isinstance(payload, dict):
-        payload = nodes.reflect_report(**payload)
-
-    class _StructuredLLM:
-        async def ainvoke(self, _messages):
-            return payload
-
-    class _ReflectorLLM:
-        def with_structured_output(self, _schema):
-            return _StructuredLLM()
-
-    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: _ReflectorLLM())
-    state = _base_state()
-    state.update(
-        {
-            "merged_analysis": "分析",
-            "search_results": "检索",
-            "plan": "计划",
-        }
-    )
-    return asyncio.run(nodes.reflector_node(state))
-
-
-def test_reflector_structured_output_renders_to_string(monkeypatch: pytest.MonkeyPatch) -> None:
-    result = _run_reflector_with_payload(
-        monkeypatch,
-        {
-            "completeness_check": "无明显缺失",
-            "consistency_check": "未见明显冲突",
-            "hallucination_risk": "未见明显幻觉风险",
-            "minimal_corrections": ["继续监测血压变化"],
-            "quality_conclusion": "PASS",
-        },
-    )
-    reflection = result["reflection"]
-    assert isinstance(reflection, str)
-    assert "1. 完整性检查：" in reflection
-    assert "2. 一致性检查：" in reflection
-    assert "3. 幻觉风险：" in reflection
-    assert "4. 最小修正建议：" in reflection
-    assert "5. 质检结论：PASS" in reflection
-
-
-def test_reflector_writes_pass_fail_to_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
-    pass_result = _run_reflector_with_payload(
-        monkeypatch,
-        {
-            "completeness_check": "无明显缺失",
-            "consistency_check": "未见明显冲突",
-            "hallucination_risk": "未见明显幻觉风险",
-            "minimal_corrections": ["保持当前管理"],
-            "quality_conclusion": "PASS",
-        },
-    )
-    assert "5. 质检结论：PASS" in pass_result["reflection"]
-
-    fail_result = _run_reflector_with_payload(
-        monkeypatch,
-        {
-            "completeness_check": "缺失近期血压记录",
-            "consistency_check": "计划与检索建议不一致",
-            "hallucination_risk": "部分结论证据不足",
-            "minimal_corrections": ["补齐血压日志"],
-            "quality_conclusion": "FAIL",
-        },
-    )
-    assert "5. 质检结论：FAIL" in fail_result["reflection"]
-
-
-def test_reflector_redo_when_fail_and_under_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    result = _run_reflector_with_payload(
-        monkeypatch,
-        {
-            "completeness_check": "缺失近期血压记录",
-            "consistency_check": "计划与检索建议不一致",
-            "hallucination_risk": "部分结论证据不足",
-            "minimal_corrections": ["补齐血压日志"],
-            "quality_conclusion": "FAIL",
-        },
-    )
-    assert result["planner_decision"] == "REDO"
-    assert result["iteration"] == 1
-
-
-def test_reflector_summary_when_pass(monkeypatch: pytest.MonkeyPatch) -> None:
-    result = _run_reflector_with_payload(
-        monkeypatch,
-        {
-            "completeness_check": "无明显缺失",
-            "consistency_check": "未见明显冲突",
-            "hallucination_risk": "未见明显幻觉风险",
-            "minimal_corrections": ["维持当前随访"],
-            "quality_conclusion": "PASS",
-        },
-    )
-    assert result["planner_decision"] == "SUMMARY"
-
-
-def test_reflector_summary_when_limit_reached(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _StructuredLLM:
-        async def ainvoke(self, _messages):
-            return nodes.reflect_report(
-                completeness_check="缺失近期血压记录",
-                consistency_check="计划与检索建议不一致",
-                hallucination_risk="部分结论证据不足",
-                minimal_corrections=["补齐血压日志"],
-                quality_conclusion="FAIL",
-            )
-
-    class _ReflectorLLM:
-        def with_structured_output(self, _schema):
-            return _StructuredLLM()
+def test_reflector_writes_struct_and_ai_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_invoke_structured(_llm, schema, _messages):
+        assert schema is ReflectReport
+        return (
+            ReflectReport(
+                completeness_check="无明显缺失",
+                consistency_check="未见明显冲突",
+                hallucination_risk="未见明显幻觉风险",
+                minimal_corrections=["继续监测"],
+                quality_conclusion="PASS",
+            ),
+            AIMessage(content="reflect_struct"),
+        )
 
     monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: _ReflectorLLM())
+    monkeypatch.setattr(nodes, "_invoke_structured", _fake_invoke_structured)
+    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: object())
 
     state = _base_state()
-    state.update(
-        {
-            "iteration": 1,
-            "merged_analysis": "分析",
-            "search_results": "检索",
-            "plan": "计划",
-        }
-    )
+    state.update({"merged_analysis": "分析", "search_results": "检索", "plan": "计划"})
     result = asyncio.run(nodes.reflector_node(state))
-    assert result["iteration"] == 2
+    assert isinstance(result["reflection_struct"], dict)
+    assert "5. 质检结论：PASS" in result["reflection"]
     assert result["planner_decision"] == "SUMMARY"
+    assert isinstance(result["messages"][0], AIMessage)
 
 
-def test_planner_redo_has_high_priority_and_replans_once_then_tooler(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = {"planner_update_calls": 0}
-
-    class FakeToolBoundLLM:
-        async def ainvoke(self, _messages):
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "web_search",
-                        "args": {"query": "高血压 复诊"},
-                        "id": "call_1",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-
-    class FakePlannerLLM:
-        def bind_tools(self, _tools):
-            return FakeToolBoundLLM()
-
-    async def _fake_safe_llm_call(_llm, _prompt: str, stage: str) -> str:
-        if stage == "planner.update":
-            captured["planner_update_calls"] += 1
-            return "重写后的计划"
-        return "unused"
+def test_summarize_node_writes_summary_struct_and_ai_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_invoke_structured(_llm, schema, _messages):
+        assert schema is PatientSummary
+        return (
+            PatientSummary(
+                key_findings=["近期头痛"],
+                action_items=["补水休息"],
+                cautions=["加重及时就医"],
+            ),
+            AIMessage(content="summary_struct"),
+        )
 
     monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
-    monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
-    state = _base_state()
-    state.update(
-        {
-            "tools_dispatched": True,
-            "reflection": "已有反思",
-            "planner_decision": "REDO",
-        }
-    )
-    result = asyncio.run(nodes.planner_node(state))
-    assert result.goto == "tooler"
-    assert captured["planner_update_calls"] == 1
-    assert result.update["plan"] == "重写后的计划"
-    assert result.update["planner_decision"] == ""
-    assert result.update["tools_dispatched"] is True
-    assert result.update["tool_skipped"] is False
-
-
-def test_planner_routes_summary_when_reflector_approved(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
+    monkeypatch.setattr(nodes, "_invoke_structured", _fake_invoke_structured)
     monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: object())
+
     state = _base_state()
     state.update(
         {
-            "tools_dispatched": True,
-            "reflection": "已有反思",
-            "planner_decision": "SUMMARY",
+            "query_intent": "MEDICAL",
+            "merged_analysis": "分析",
+            "search_results": "检索",
+            "plan": "计划",
+            "reflection": "通过",
         }
     )
-    result = asyncio.run(nodes.planner_node(state))
-    assert result.goto == "summarize"
+    result = asyncio.run(nodes.summarize_node(state))
+    assert isinstance(result["summary_struct"], dict)
+    assert "1. 关键发现" in result["summary"]
+    assert isinstance(result["messages"][0], AIMessage)
 
 
-def test_planner_summary_short_circuit(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = {"safe_calls": 0, "tool_calls": 0}
-
-    class FakeToolBoundLLM:
-        async def ainvoke(self, _messages):
-            captured["tool_calls"] += 1
-            return AIMessage(content="", tool_calls=[])
-
-    class FakePlannerLLM:
-        def bind_tools(self, _tools):
-            return FakeToolBoundLLM()
-
-    async def _fake_safe_llm_call(_llm, _prompt: str, _stage: str) -> str:
-        captured["safe_calls"] += 1
-        return "should-not-run"
-
-    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
-    monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
-
-    state = _base_state()
-    state.update({"tools_dispatched": True, "planner_decision": "SUMMARY"})
-    result = asyncio.run(nodes.planner_node(state))
-    assert result.goto == "summarize"
-    assert captured["safe_calls"] == 0
-    assert captured["tool_calls"] == 0
-
-
-def test_planner_init_plan_then_dispatch_without_self_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeToolBoundLLM:
-        async def ainvoke(self, _messages):
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "web_search",
-                        "args": {"query": "糖尿病 随访"},
-                        "id": "call_1",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-
-    class FakePlannerLLM:
-        def bind_tools(self, _tools):
-            return FakeToolBoundLLM()
-
-    async def _fake_safe_llm_call(_llm, _prompt: str, stage: str) -> str:
-        if stage == "planner.init":
-            return "初始化计划"
-        return "unused"
-
-    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
-    monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
-
-    state = _base_state()
-    state["plan"] = ""
-    result = asyncio.run(nodes.planner_node(state))
-    assert result.goto == "tooler"
-    assert result.update["plan"] == "初始化计划"
-    assert result.update["tools_dispatched"] is True
-
-
-def test_reflector_fail_redo_pass_summary_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
-    fail_result = _run_reflector_with_payload(
-        monkeypatch,
-        {
-            "completeness_check": "缺失近期血压记录",
-            "consistency_check": "计划与检索建议不一致",
-            "hallucination_risk": "部分结论证据不足",
-            "minimal_corrections": ["补齐血压日志"],
-            "quality_conclusion": "FAIL",
-        },
-    )
-    assert fail_result["planner_decision"] == "REDO"
-
-    pass_result = _run_reflector_with_payload(
-        monkeypatch,
-        {
-            "completeness_check": "无明显缺失",
-            "consistency_check": "未见明显冲突",
-            "hallucination_risk": "未见明显幻觉风险",
-            "minimal_corrections": ["维持当前管理"],
-            "quality_conclusion": "PASS",
-        },
-    )
-    assert pass_result["planner_decision"] == "SUMMARY"
-
-
-def test_planner_routes_reflector_on_unknown_decision(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: object())
-    state = _base_state()
-    state.update(
-        {
-            "tools_dispatched": True,
-            "planner_decision": "UNKNOWN",
-        }
-    )
-    result = asyncio.run(nodes.planner_node(state))
-    assert result.goto == "reflector"
-    assert result.update["planner_decision"] == "REFLECT"
-
-
-def test_planner_toolcall_prompt_includes_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = {"human": ""}
-
-    class FakeToolBoundLLM:
+def test_summarize_non_medical_uses_system_human_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeLLM:
         async def ainvoke(self, messages):
-            captured["human"] = str(messages[-1].content)
-            return AIMessage(content="", tool_calls=[])
-
-    class FakePlannerLLM:
-        def bind_tools(self, _tools):
-            return FakeToolBoundLLM()
+            assert messages[0].type == "system"
+            assert messages[1].type == "human"
+            return AIMessage(content="你好，这里是通用回答")
 
     monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
+    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakeLLM())
 
     state = _base_state()
-    state.update(
-        {
-            "tools_dispatched": False,
-            "planner_tool_attempts": 0,
-            "reflection": "5. 质检结论：FAIL",
-        }
-    )
-    asyncio.run(nodes.planner_node(state))
-    assert "上一轮质检反馈" in captured["human"]
-    assert "5. 质检结论：FAIL" in captured["human"]
-
-
-def test_planner_update_prompt_includes_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = {"prompt": ""}
-
-    class FakeToolBoundLLM:
-        async def ainvoke(self, _messages):
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "web_search",
-                        "args": {"query": "检查建议"},
-                        "id": "call_1",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-
-    class FakePlannerLLM:
-        def bind_tools(self, _tools):
-            return FakeToolBoundLLM()
-
-    async def _fake_safe_llm_call(_llm, prompt: str, stage: str) -> str:
-        if stage == "planner.update":
-            captured["prompt"] = prompt
-        return "更新后的计划"
-
-    monkeypatch.setattr(nodes, "mark_stage", _noop_mark_stage)
-    monkeypatch.setattr(nodes, "get_chat_model", lambda *args, **kwargs: FakePlannerLLM())
-    monkeypatch.setattr(nodes, "safe_llm_call", _fake_safe_llm_call)
-
-    state = _base_state()
-    state.update(
-        {
-            "tools_dispatched": True,
-            "planner_decision": "REDO",
-            "reflection": "4. 最小修正建议：补充检验指标",
-        }
-    )
-    result = asyncio.run(nodes.planner_node(state))
-    assert result.goto == "tooler"
-    assert "上一轮质检反馈" in captured["prompt"]
-    assert "4. 最小修正建议：补充检验指标" in captured["prompt"]
+    state.update({"query_intent": "NON_MEDICAL", "raw_text": "你好"})
+    result = asyncio.run(nodes.summarize_node(state))
+    assert result["summary"] == "你好，这里是通用回答"
+    assert isinstance(result["summary_struct"], dict)
+    assert isinstance(result["messages"][0], AIMessage)

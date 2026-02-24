@@ -54,6 +54,7 @@ async def web_search(
                 "query": normalized_query,
                 "results": results,
                 "summary": "\n".join(summary_lines) if summary_lines else "未找到相关结果。",
+                "source_count": len(results),
             },
             start_ts,
         )
@@ -95,6 +96,7 @@ async def rag_search(
                 "query": normalized_query,
                 "documents": docs,
                 "summary": summary,
+                "source_count": len(docs),
             },
             start_ts,
         )

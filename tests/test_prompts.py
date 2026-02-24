@@ -36,21 +36,23 @@ def test_all_prompt_constants_loaded() -> None:
 
 
 def test_prompt_placeholders_preserved() -> None:
-    assert "{medical_text}" in prompts.MEDGEMMA_TEXT_PROMPT
-    assert "{clinical_context}" in prompts.MEDGEMMA_IMAGE_PROMPT
-    assert "{analysis}" in prompts.PLAN_PROMPT
-    assert "{search_results}" in prompts.PLAN_PROMPT
-    assert "{analysis}" in prompts.SUMMARIZE_PROMPT
-    assert "{search_results}" in prompts.SUMMARIZE_PROMPT
-    assert "{plan}" in prompts.SUMMARIZE_PROMPT
-    assert "{reflection}" in prompts.SUMMARIZE_PROMPT
+    # New policy: these templates are pure system prompts (no business placeholders).
+    assert "{user_text}" not in prompts.INTENT_CLASSIFY_PROMPT
+    assert "{medical_text}" not in prompts.MEDGEMMA_TEXT_PROMPT
+    assert "{clinical_context}" not in prompts.MEDGEMMA_IMAGE_PROMPT
+    assert "{analysis}" not in prompts.PLAN_PROMPT
+    assert "{search_results}" not in prompts.PLAN_PROMPT
+    assert "{analysis}" not in prompts.SUMMARIZE_PROMPT
+    assert "{search_results}" not in prompts.SUMMARIZE_PROMPT
+    assert "{plan}" not in prompts.SUMMARIZE_PROMPT
+    assert "{reflection}" not in prompts.SUMMARIZE_PROMPT
 
 
 def test_import_fails_when_file_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     missing_dir = Path("/tmp/missing-prompts-dir-for-test")
     monkeypatch.setattr(prompts, "_PROMPTS_DIR", missing_dir)
     with pytest.raises(RuntimeError) as exc:
-        prompts._load_prompt_file("plan.md")
+        prompts.load_prompt_file("plan.md")
     assert "Failed to load prompt file:" in str(exc.value)
     assert str(missing_dir / "plan.md") in str(exc.value)
 
