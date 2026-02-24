@@ -29,37 +29,37 @@ def normalize_image_base64(image_base64: str) -> str:
 
 def _render_text_analysis_text(analysis: MedicalTextAnalysis) -> str:
     def _join(items: list[str]) -> str:
-        return "\n".join(f"- {item}" for item in items if str(item).strip()) or "- 暂无"
+        return "\n".join(f"- {item}" for item in items if str(item).strip()) or "- None"
 
     return (
-        "1. 患者基本信息\n"
+        "1. Patient Profile\n"
         f"{_join(analysis.patient_profile)}\n\n"
-        "2. 主要诊断\n"
+        "2. Primary Diagnoses\n"
         f"{_join(analysis.main_diagnoses)}\n\n"
-        "3. 现有用药方案\n"
+        "3. Current Medication Plan\n"
         f"{_join(analysis.medications)}\n\n"
-        "4. 关键检查指标及异常值\n"
+        "4. Key Test Indicators and Abnormal Values\n"
         f"{_join(analysis.abnormal_indicators)}\n\n"
-        "5. 风险评估\n"
+        "5. Risk Assessment\n"
         f"{_join(analysis.risk_assessment)}\n\n"
-        "6. 需要关注的问题\n"
+        "6. Attention Points\n"
         f"{_join(analysis.follow_up_points)}"
     )
 
 
 def _render_image_analysis_text(analysis: MedicalImageAnalysis) -> str:
     def _join(items: list[str]) -> str:
-        return "\n".join(f"- {item}" for item in items if str(item).strip()) or "- 暂无"
+        return "\n".join(f"- {item}" for item in items if str(item).strip()) or "- None"
 
     return (
-        f"1. 图像类型识别\n- {analysis.image_type or '未说明'}\n\n"
-        "2. 主要发现\n"
+        f"1. Image Type\n- {analysis.image_type or 'Not specified'}\n\n"
+        "2. Primary Findings\n"
         f"{_join(analysis.key_findings)}\n\n"
-        "3. 异常区域描述\n"
+        "3. Abnormal Regions\n"
         f"{_join(analysis.abnormal_regions)}\n\n"
-        "4. 临床意义评估\n"
+        "4. Clinical Implications\n"
         f"{_join(analysis.clinical_implications)}\n\n"
-        "5. 建议进一步检查\n"
+        "5. Recommended Further Checks\n"
         f"{_join(analysis.recommended_checks)}"
     )
 
@@ -87,23 +87,23 @@ async def _invoke_structured(llm, schema, messages):
 async def analyze_medical_text(
     medical_text: Annotated[
         str,
-        "医学文本分析输入。只要用户提供了病历文字信息，就应优先调用本工具；参数必须为非空原文文本。",
+        "Medical text input for analysis. Prioritize this tool whenever medical text is provided; the parameter must be non-empty original text.",
     ]
 ) -> str:
-    """医学文本证据提取工具（返回 envelope JSON 字符串）。
+    """Medical text evidence extraction tool (returns envelope JSON string).
 
-    Planner 调用策略:
-    1. 只要输入包含医学文字信息（主诉/症状/病史/检查结果/诊断/用药），默认应调用。
-    3. 仅在用户完全没有可分析医学文本时才可跳过。
+    Planner call strategy:
+    1. If the input contains medical text (chief complaint/symptoms/history/exam results/diagnosis/medication), call this tool by default.
+    2. Skip only when no analyzable medical text exists.
 
-    参数要求:
-    - `medical_text`: 非空，尽量保留用户原始医学描述，避免过度改写。
+    Parameters:
+    - `medical_text`: Non-empty. Keep the user's original medical description as much as possible.
 
-    成功字段:
-    - `data.analysis_text`: 结构化医学分析结论（供 planner/reflector/summarizer 使用）。
+    Success fields:
+    - `data.analysis_text`: Structured medical analysis text for planner/reflector/summarizer.
 
-    常见错误码:
-    - `MODEL_UNAVAILABLE`、`UPSTREAM_ERROR`。
+    Common error codes:
+    - `MODEL_UNAVAILABLE`, `UPSTREAM_ERROR`.
     """
     _logger.debug(f"Invoking analyze_medical_text with input: {medical_text[:100]}...")
     start_ts = time.perf_counter()
@@ -139,7 +139,7 @@ async def analyze_medical_text(
         return error_payload(
             "analyze_medical_text",
             "UPSTREAM_ERROR",
-            f"MedGemma 文本分析失败: {e}",
+            f"MedGemma text analysis failed: {e}",
             start_ts,
         )
 
@@ -148,29 +148,29 @@ async def analyze_medical_text(
 async def analyze_medical_image(
     image_base64: Annotated[
         str,
-        "医学图像 base64 内容。只要存在影像/照片输入（X光/CT/MRI/超声/皮损/报告截图等），应优先调用本工具；可传原始 base64 或 data URL。",
+        "Medical image base64 content. If image/photo input exists (X-ray/CT/MRI/ultrasound/skin lesion/report screenshot, etc.), prioritize this tool; raw base64 or data URL is supported.",
     ],
     clinical_context: Annotated[
         str,
-        "临床上下文（主诉/病史/部位/时长/既往检查），建议尽量填写以提升影像判读准确性；可为空。",
+        "Clinical context (chief complaint/history/body part/duration/prior tests). Fill when possible to improve interpretation accuracy; can be empty.",
     ] = "",
 ) -> str:
-    """医学图像判读工具（返回 envelope JSON 字符串）。
+    """Medical image interpretation tool (returns envelope JSON string).
 
-    Planner 调用策略（提高召回）:
-    1. 只要接收到任何医学图像或检查截图，应调用本工具，不要仅依赖文本推断。
-    3. 图像存在时，本工具通常应与 `analyze_medical_text` 并行调用以补齐证据。
+    Planner call strategy:
+    1. If any medical image or exam screenshot is provided, call this tool instead of relying on text-only inference.
+    2. When images exist, this tool should usually run in parallel with `analyze_medical_text`.
 
-    参数要求:
-    - `image_base64`: 必须是可解码图像内容（支持 data URL）。
-    - `clinical_context`: 推荐填写，至少包含症状或检查背景，可显著提高输出质量。
+    Parameters:
+    - `image_base64`: Must be decodable image content (data URL supported).
+    - `clinical_context`: Recommended; at least symptoms or exam context can improve quality.
 
-    成功字段:
-    - `data.analysis_text`: 图像分析结果。
-    - `data.key_facts`: 关键发现（当前通常为空列表）。
+    Success fields:
+    - `data.analysis_text`: Image analysis result.
+    - `data.key_facts`: Key findings.
 
-    常见错误码:
-    - `MODEL_UNAVAILABLE`、`INVALID_INPUT`、`UPSTREAM_ERROR`。
+    Common error codes:
+    - `MODEL_UNAVAILABLE`, `INVALID_INPUT`, `UPSTREAM_ERROR`.
     """
     start_ts = time.perf_counter()
 
@@ -179,7 +179,7 @@ async def analyze_medical_image(
         return error_payload(
             "analyze_medical_image",
             "MODEL_UNAVAILABLE",
-            "图像分析模型不可用：请检查对应 agent 的模型配置。",
+            "Image analysis model is unavailable. Please check agent model configuration.",
             start_ts,
         )
     normalized_image_base64 = normalize_image_base64(image_base64)
@@ -187,7 +187,7 @@ async def analyze_medical_image(
         return error_payload(
             "analyze_medical_image",
             "INVALID_INPUT",
-            "图像分析失败: image_base64 为空。",
+            "Image analysis failed: image_base64 is empty.",
             start_ts,
         )
     try:
@@ -196,7 +196,7 @@ async def analyze_medical_image(
         return error_payload(
             "analyze_medical_image",
             "INVALID_INPUT",
-            "图像分析失败: image_base64 非法，无法解码。",
+            "Image analysis failed: image_base64 is invalid or cannot be decoded.",
             start_ts,
         )
     try:
@@ -209,7 +209,7 @@ async def analyze_medical_image(
                     content=[
                         {
                             "type": "text",
-                            "text": f"临床背景:\n{clinical_context or '无额外临床背景信息'}",
+                            "text": f"Clinical Context:\n{clinical_context or 'No additional clinical context provided'}",
                         },
                         {
                             "type": "image_url",
@@ -235,6 +235,6 @@ async def analyze_medical_image(
         return error_payload(
             "analyze_medical_image",
             "UPSTREAM_ERROR",
-            f"MedGemma 图像分析失败: {e}",
+            f"MedGemma image analysis failed: {e}",
             start_ts,
         )

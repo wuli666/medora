@@ -36,12 +36,12 @@ def _split_markdown_sections(summary_text: str) -> dict[str, str]:
         return {}
     lines = text.splitlines()
     sections: dict[str, list[str]] = {}
-    current = "正文"
+    current = "Body"
     sections[current] = []
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("## "):
-            current = stripped[3:].strip() or "正文"
+            current = stripped[3:].strip() or "Body"
             sections.setdefault(current, [])
             continue
         if stripped.startswith("# "):
@@ -53,8 +53,8 @@ def _split_markdown_sections(summary_text: str) -> dict[str, str]:
 def _build_sections(summary_struct: dict | None, summary_text: str) -> tuple[str, str, list[tuple[str, list[str]]]]:
     data = summary_struct if isinstance(summary_struct, dict) else {}
 
-    title = str(data.get("report_title", "")).strip() or "健康管理与随访报告"
-    brief = str(data.get("brief_summary", "")).strip() or "已结合当前资料生成报告。"
+    title = str(data.get("report_title", "")).strip() or "Health Management & Follow-up Report"
+    brief = str(data.get("brief_summary", "")).strip() or "A report has been generated from the available information."
 
     key_findings = _coerce_list(data.get("key_findings"))
     medication = _coerce_list(data.get("medication_reminders"))
@@ -62,19 +62,21 @@ def _build_sections(summary_struct: dict | None, summary_text: str) -> tuple[str
 
     if not data:
         parsed = _split_markdown_sections(summary_text)
-        brief = parsed.get("摘要", brief)
-        key_findings = _coerce_list(parsed.get("关键发现", "")) or ["暂无明确关键发现"]
-        medication = _coerce_list(parsed.get("用药提醒", ""))
-        follow_up = _coerce_list(parsed.get("随访提示", ""))
+        brief = parsed.get("Summary", parsed.get("摘要", brief))
+        key_findings = _coerce_list(parsed.get("Key Findings", parsed.get("关键发现", ""))) or [
+            "No clear key findings at this time."
+        ]
+        medication = _coerce_list(parsed.get("Medication Reminders", parsed.get("用药提醒", "")))
+        follow_up = _coerce_list(parsed.get("Follow-up Tips", parsed.get("随访提示", "")))
 
     if not key_findings:
-        key_findings = ["暂无明确关键发现"]
+        key_findings = ["No clear key findings at this time."]
 
-    sections: list[tuple[str, list[str]]] = [("关键发现", key_findings)]
+    sections: list[tuple[str, list[str]]] = [("Key Findings", key_findings)]
     if medication:
-        sections.append(("用药提醒", medication))
+        sections.append(("Medication Reminders", medication))
     if follow_up:
-        sections.append(("随访提示", follow_up))
+        sections.append(("Follow-up Tips", follow_up))
     return title, brief, sections
 
 
@@ -106,7 +108,7 @@ def build_report_pdf_bytes(summary_struct: dict | None, summary_text: str, run_i
     try:
         fontname = "china-s"
         # Probe font support early.
-        _ = fitz.get_text_length("中文", fontname=fontname, fontsize=_BODY_SIZE)
+        _ = fitz.get_text_length("EN", fontname=fontname, fontsize=_BODY_SIZE)
     except Exception:
         logger.warning("[report_pdf] fallback to helv due to unavailable CJK font")
         fontname = "helv"
@@ -121,12 +123,12 @@ def build_report_pdf_bytes(summary_struct: dict | None, summary_text: str, run_i
     ensure_space(80)
     y += _draw_wrapped_text(page, title, _MARGIN_X, y, text_width, _TITLE_SIZE, fontname)
     y += 8
-    subtitle = f"生成时间：{created_at}    报告编号：{report_no}"
+    subtitle = f"Generated at: {created_at}    Report ID: {report_no}"
     y += _draw_wrapped_text(page, subtitle, _MARGIN_X, y, text_width, _SUBTITLE_SIZE, fontname)
     y += 16
 
     ensure_space(60)
-    y += _draw_wrapped_text(page, "摘要", _MARGIN_X, y, text_width, _HEADING_SIZE, fontname)
+    y += _draw_wrapped_text(page, "Summary", _MARGIN_X, y, text_width, _HEADING_SIZE, fontname)
     y += 6
     y += _draw_wrapped_text(page, brief, _MARGIN_X, y, text_width, _BODY_SIZE, fontname)
     y += 12

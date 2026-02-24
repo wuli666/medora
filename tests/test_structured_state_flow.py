@@ -80,7 +80,7 @@ def test_plan_reflect_summary_double_write(monkeypatch):
         if schema is PatientSummary:
             return (
                 PatientSummary(
-                    report_title="健康管理与随访报告",
+                    report_title="Health Management & Follow-up Report",
                     brief_summary="当前以头痛症状为主，建议先休息并观察变化。",
                     key_findings=["头痛"],
                     medication_reminders=["按医嘱规律服药，避免自行加量。"],

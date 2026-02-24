@@ -228,7 +228,7 @@ def test_reflector_writes_struct_and_ai_message(monkeypatch: pytest.MonkeyPatch)
     state.update({"merged_analysis": "分析", "search_results": "检索", "plan": "计划"})
     result = asyncio.run(nodes.reflector_node(state))
     assert isinstance(result["reflection_struct"], dict)
-    assert "5. 质检结论：PASS" in result["reflection"]
+    assert "5. Quality Conclusion: PASS" in result["reflection"]
     assert result["planner_decision"] == "SUMMARY"
     assert isinstance(result["messages"][0], AIMessage)
 
@@ -238,7 +238,7 @@ def test_summarize_node_writes_summary_struct_and_ai_message(monkeypatch: pytest
         assert schema is PatientSummary
         return (
             PatientSummary(
-                report_title="健康管理与随访报告",
+                report_title="Health Management & Follow-up Report",
                 brief_summary="近期以头痛为主，当前建议先规律休息并持续观察变化。",
                 key_findings=["近期头痛"],
                 medication_reminders=["布洛芬 0.2g，饭后按需服用，日内不超过说明书剂量。"],
@@ -263,11 +263,11 @@ def test_summarize_node_writes_summary_struct_and_ai_message(monkeypatch: pytest
     )
     result = asyncio.run(nodes.summarize_node(state))
     assert isinstance(result["summary_struct"], dict)
-    assert "# 健康管理与随访报告" in result["summary"]
-    assert "## 摘要" in result["summary"]
-    assert "## 关键发现" in result["summary"]
-    assert "## 用药提醒" in result["summary"]
-    assert "## 随访提示" in result["summary"]
+    assert "# Health Management & Follow-up Report" in result["summary"]
+    assert "## Summary" in result["summary"]
+    assert "## Key Findings" in result["summary"]
+    assert "## Medication Reminders" in result["summary"]
+    assert "## Follow-up Tips" in result["summary"]
     assert isinstance(result["messages"][0], AIMessage)
 
 

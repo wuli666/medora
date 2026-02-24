@@ -7,11 +7,11 @@ from src.utils.report_pdf import build_report_pdf_bytes
 
 def test_build_report_pdf_bytes_with_struct() -> None:
     payload = {
-        "report_title": "健康管理与随访报告",
-        "brief_summary": "当前情况总体稳定，建议继续规律监测并按时复查。",
-        "key_findings": ["近期血压偏高，需持续监测。"],
-        "medication_reminders": ["氨氯地平 5mg，每日一次，早晨服用。"],
-        "follow_up_tips": ["若连续3天血压>=160/100mmHg，请3天内复查。"],
+        "report_title": "Health Management & Follow-up Report",
+        "brief_summary": "Overall condition is stable; continue routine monitoring and scheduled rechecks.",
+        "key_findings": ["Recent blood pressure is elevated and needs continued monitoring."],
+        "medication_reminders": ["Amlodipine 5mg once daily in the morning."],
+        "follow_up_tips": ["If blood pressure remains >=160/100 mmHg for 3 days, recheck within 3 days."],
     }
     pdf_bytes = build_report_pdf_bytes(payload, "", "run-test-1")
     assert isinstance(pdf_bytes, bytes)
@@ -21,19 +21,19 @@ def test_build_report_pdf_bytes_with_struct() -> None:
     assert doc.page_count >= 1
     text = doc[0].get_text()
     doc.close()
-    assert "健康管理与随访报告" in text
-    assert "摘要" in text
-    assert "关键发现" in text
+    assert "Health Management & Follow-up Report" in text
+    assert "Summary" in text
+    assert "Key Findings" in text
 
 
 def test_build_report_pdf_bytes_with_text_fallback() -> None:
-    summary_text = """# 健康管理与随访报告
+    summary_text = """# Health Management & Follow-up Report
 
-## 摘要
-整体情况稳定。
+## Summary
+Overall condition is stable.
 
-## 关键发现
-- 存在轻度炎症指标升高。
+## Key Findings
+- Mild inflammatory markers are elevated.
 """
     pdf_bytes = build_report_pdf_bytes(None, summary_text, "run-test-2")
     assert isinstance(pdf_bytes, bytes)

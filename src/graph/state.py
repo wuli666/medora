@@ -126,12 +126,12 @@ class ReflectReport(BaseModel):
 
 class PatientSummary(BaseModel):
     report_title: str = Field(
-        default="健康管理与随访报告",
+        default="Health Management & Follow-up Report",
         description="Fixed report title for patient-facing final report.",
     )
     brief_summary: str = Field(
         default="",
-        description="A short plain-language summary, roughly around 50 Chinese characters.",
+        description="A short plain-language summary, roughly around 100 words.",
     )
     key_findings: list[str] = Field(
         default_factory=list,

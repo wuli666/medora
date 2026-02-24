@@ -29,8 +29,8 @@ def test_mark_substep_lifecycle() -> None:
             stage_key="planner",
             substep_id="plan_draft",
             status="running",
-            label="生成初步管理建议",
-            detail="正在生成建议。",
+            label="Draft initial care recommendations",
+            detail="Generating recommendations.",
         )
     )
     snapshot = _run(progress.get_run(run_id))
@@ -45,7 +45,7 @@ def test_mark_substep_lifecycle() -> None:
             stage_key="planner",
             substep_id="plan_draft",
             status="done",
-            detail="建议生成完成。",
+            detail="Recommendations generated.",
         )
     )
     snapshot = _run(progress.get_run(run_id))
@@ -53,4 +53,4 @@ def test_mark_substep_lifecycle() -> None:
     planner = next(s for s in snapshot["stages"] if s["key"] == "planner")
     assert planner["current_substep"] == ""
     assert planner["substeps"][0]["status"] == "done"
-    assert planner["substeps"][0]["detail"] == "建议生成完成。"
+    assert planner["substeps"][0]["detail"] == "Recommendations generated."

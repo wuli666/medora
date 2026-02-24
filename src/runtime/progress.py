@@ -5,12 +5,12 @@ from copy import deepcopy
 from typing import Any
 
 STAGE_META = [
-    ("quick_router", "意图识别"),
-    ("planner", "管理计划生成"),
-    ("tooler", "病历/影像解析"),
-    ("searcher", "医学检索补充"),
-    ("reflector", "一致性校验"),
-    ("summarize", "患者摘要生成"),
+    ("quick_router", "Intent Triage"),
+    ("planner", "Care Plan Drafting"),
+    ("tooler", "Record/Image Analysis"),
+    ("searcher", "Medical Evidence Retrieval"),
+    ("reflector", "Consistency Review"),
+    ("summarize", "Patient Summary"),
 ]
 
 _RUNS: dict[str, dict[str, Any]] = {}

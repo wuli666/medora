@@ -12,11 +12,11 @@ def test_download_report_pdf_success(monkeypatch):
         return {
             "done": True,
             "response": {
-                "summary": "# 健康管理与随访报告\n\n## 摘要\n状态稳定。",
+                "summary": "# Health Management & Follow-up Report\n\n## Summary\nStable condition.",
                 "summary_struct": {
-                    "report_title": "健康管理与随访报告",
-                    "brief_summary": "状态稳定。",
-                    "key_findings": ["关键发现A"],
+                    "report_title": "Health Management & Follow-up Report",
+                    "brief_summary": "Stable condition.",
+                    "key_findings": ["Key finding A"],
                     "medication_reminders": [],
                     "follow_up_tips": [],
                 },
@@ -61,11 +61,11 @@ def test_download_report_pdf_non_formal_report(monkeypatch):
         return {
             "done": True,
             "response": {
-                "summary": "今天天气不错，阳光明媚。",
+                "summary": "Nice weather today, sunny and clear.",
                 "summary_struct": {
-                    "report_title": "通用咨询回复",
-                    "brief_summary": "今天天气不错，阳光明媚。",
-                    "key_findings": ["非医疗咨询"],
+                    "report_title": "General Consultation Reply",
+                    "brief_summary": "Nice weather today, sunny and clear.",
+                    "key_findings": ["Non-medical consultation"],
                     "medication_reminders": [],
                     "follow_up_tips": [],
                 },

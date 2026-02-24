@@ -55,7 +55,7 @@ def _is_formal_medical_report(summary_struct: dict | None) -> bool:
     if not isinstance(summary_struct, dict):
         return False
     title = str(summary_struct.get("report_title", "")).strip()
-    return title == "健康管理与随访报告"
+    return title in {"Health Management & Follow-up Report", "健康管理与随访报告"}
 
 
 def _looks_medical(text: str) -> bool:
@@ -72,7 +72,7 @@ def _route_stages(intent: str) -> list[StageItem]:
         return [
             StageItem(
                 key="quick_router",
-                label="意图识别",
+                label="Intent Triage",
                 status="running",
                 content="",
                 substeps=[],
@@ -80,12 +80,12 @@ def _route_stages(intent: str) -> list[StageItem]:
             )
         ]
     return [
-        StageItem(key="quick_router", label="意图识别", status="running", content="", substeps=[], current_substep=""),
-        StageItem(key="planner", label="管理计划生成", status="pending", content="", substeps=[], current_substep=""),
-        StageItem(key="tooler", label="病历/影像解析", status="pending", content="", substeps=[], current_substep=""),
-        StageItem(key="searcher", label="医学检索补充", status="pending", content="", substeps=[], current_substep=""),
-        StageItem(key="reflector", label="一致性校验", status="pending", content="", substeps=[], current_substep=""),
-        StageItem(key="summarize", label="患者摘要生成", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="quick_router", label="Intent Triage", status="running", content="", substeps=[], current_substep=""),
+        StageItem(key="planner", label="Care Plan Drafting", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="tooler", label="Record/Image Analysis", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="searcher", label="Medical Evidence Retrieval", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="reflector", label="Consistency Review", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="summarize", label="Patient Summary", status="pending", content="", substeps=[], current_substep=""),
     ]
 
 
@@ -210,8 +210,8 @@ async def run_multi_agent(
         logger.info("[run_multi_agent] graph_invoke end")
     except Exception as exc:
         logger.exception("[run_multi_agent] graph failed")
-        await fail_run(run_id, f"后端处理失败: {exc}")
-        raise HTTPException(status_code=500, detail=f"后端处理失败: {exc}") from exc
+        await fail_run(run_id, f"Backend processing failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Backend processing failed: {exc}") from exc
 
     # Build stage outputs
     tool_output = result.get("merged_analysis", "")
@@ -230,31 +230,31 @@ async def run_multi_agent(
         stages = [
             StageItem(
                 key="planner",
-                label="管理计划生成",
+                label="Care Plan Drafting",
                 status="done" if planner_output else "skipped",
                 content=planner_output,
             ),
             StageItem(
                 key="tooler",
-                label="病历/影像解析",
+                label="Record/Image Analysis",
                 status="skipped" if tool_skipped else ("done" if tool_output else "skipped"),
                 content="" if tool_skipped else tool_output,
             ),
             StageItem(
                 key="searcher",
-                label="医学检索补充",
+                label="Medical Evidence Retrieval",
                 status="done" if search_output else "skipped",
                 content=search_output,
             ),
             StageItem(
                 key="reflector",
-                label="一致性校验",
+                label="Consistency Review",
                 status="done" if reflect_output else "skipped",
                 content=reflect_output,
             ),
             StageItem(
                 key="summarize",
-                label="患者摘要",
+                label="Patient Summary",
                 status="done" if summary_output else "skipped",
                 content=summary_output,
             ),
@@ -284,18 +284,18 @@ async def run_multi_agent(
 async def download_report_pdf(run_id: str):
     snapshot = await get_run(run_id)
     if not snapshot:
-        raise HTTPException(status_code=404, detail="未找到对应运行记录。")
+        raise HTTPException(status_code=404, detail="Run record not found.")
     if not snapshot.get("done"):
-        raise HTTPException(status_code=409, detail="当前任务尚未完成，请稍后再下载。")
+        raise HTTPException(status_code=409, detail="The current run is not finished yet. Please try again later.")
 
     response_payload = snapshot.get("response") or {}
     summary_text = str(response_payload.get("summary", "")).strip()
     if not summary_text:
-        raise HTTPException(status_code=404, detail="当前运行暂无可导出的报告内容。")
+        raise HTTPException(status_code=404, detail="No exportable report content is available for this run.")
 
     summary_struct = response_payload.get("summary_struct")
     if not _is_formal_medical_report(summary_struct):
-        raise HTTPException(status_code=404, detail="当前运行未生成正式医疗报告。")
+        raise HTTPException(status_code=404, detail="No formal medical report was generated for this run.")
 
     pdf_bytes = build_report_pdf_bytes(summary_struct=summary_struct, summary_text=summary_text, run_id=run_id)
     filename = f"health_report_{run_id[:8] or 'report'}.pdf"

@@ -19,13 +19,13 @@ CHROMA_DIR = settings.CHROMA_DIR
 
 @tool("web_search", return_direct=False)
 async def web_search(
-    query: Annotated[str, "联网检索查询词，必须为非空字符串。"]
+    query: Annotated[str, "Web retrieval query string; must be a non-empty string."]
 ) -> str:
-    """联网检索工具（Tavily，返回 envelope JSON 字符串）。
+    """Web search tool (Tavily, returns envelope JSON string).
 
-    参数要求: `query` 必须是非空字符串。
-    成功字段: `data.query`、`data.results`(title/url/snippet)、`data.summary`。
-    常见错误码: `INVALID_INPUT`、`MISSING_CONFIG`、`UPSTREAM_ERROR`。
+    Parameter requirement: `query` must be a non-empty string.
+    Success fields: `data.query`, `data.results` (title/url/snippet), `data.summary`.
+    Common error codes: `INVALID_INPUT`, `MISSING_CONFIG`, `UPSTREAM_ERROR`.
     """
     start_ts = time.perf_counter()
     normalized_query = (query or "").strip()
@@ -34,7 +34,7 @@ async def web_search(
 
     max_results = settings.WEB_SEARCH_MAX_RESULTS
     if not TAVILY_API_KEY:
-        return error_payload("web_search", "MISSING_CONFIG", "Tavily API key 未配置", start_ts)
+        return error_payload("web_search", "MISSING_CONFIG", "Tavily API key is not configured", start_ts)
     try:
         client = TavilyClient(api_key=TAVILY_API_KEY)
         response = await asyncio.to_thread(client.search, normalized_query, max_results=max_results)
@@ -47,30 +47,30 @@ async def web_search(
             url = str(item.get("url", ""))
             snippet = str(item.get("content", ""))[:300]
             results.append({"title": title, "url": url, "snippet": snippet})
-            summary_lines.append(f"- {title}: {snippet}\n  来源: {url}")
+            summary_lines.append(f"- {title}: {snippet}\n  Source: {url}")
         return ok_payload(
             "web_search",
             {
                 "query": normalized_query,
                 "results": results,
-                "summary": "\n".join(summary_lines) if summary_lines else "未找到相关结果。",
+                "summary": "\n".join(summary_lines) if summary_lines else "No relevant results found.",
                 "source_count": len(results),
             },
             start_ts,
         )
     except Exception as e:
-        return error_payload("web_search", "UPSTREAM_ERROR", f"网络搜索失败: {e}", start_ts)
+        return error_payload("web_search", "UPSTREAM_ERROR", f"Web search failed: {e}", start_ts)
 
 
 @tool("rag_search", return_direct=False)
 async def rag_search(
-    query: Annotated[str, "本地知识库检索查询词，必须为非空字符串。"]
+    query: Annotated[str, "Local knowledge-base retrieval query string; must be non-empty."]
 ) -> str:
-    """本地知识库检索工具（Chroma，返回 envelope JSON 字符串）。
+    """Local knowledge-base retrieval tool (Chroma, returns envelope JSON string).
 
-    参数要求: `query` 必须是非空字符串。
-    成功字段: `data.query`、`data.documents`、`data.summary`。
-    常见错误码: `INVALID_INPUT`、`INTERNAL_ERROR`。
+    Parameter requirement: `query` must be non-empty.
+    Success fields: `data.query`, `data.documents`, `data.summary`.
+    Common error codes: `INVALID_INPUT`, `INTERNAL_ERROR`.
     """
     start_ts = time.perf_counter()
     normalized_query = (query or "").strip()
@@ -89,7 +89,7 @@ async def rag_search(
         docs = []
         if response and response.get("documents") and response["documents"][0]:
             docs = [str(d) for d in response["documents"][0]]
-        summary = "\n---\n".join(docs) if docs else "知识库中未找到相关内容。"
+        summary = "\n---\n".join(docs) if docs else "No relevant content found in the knowledge base."
         return ok_payload(
             "rag_search",
             {
@@ -101,4 +101,4 @@ async def rag_search(
             start_ts,
         )
     except Exception as e:
-        return error_payload("rag_search", "INTERNAL_ERROR", f"RAG 检索失败: {e}", start_ts)
+        return error_payload("rag_search", "INTERNAL_ERROR", f"RAG retrieval failed: {e}", start_ts)
