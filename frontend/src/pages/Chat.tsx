@@ -120,13 +120,15 @@ type LoadingStage = {
   current_substep?: string;
 };
 
+type Lang = "zh" | "en";
+
 // 日历事件类型
 type CalendarEvent = {
   id: string;
   date: Date;
   type: "medication" | "appointment" | "followup";
-  title: string;
-  description: string;
+  title: Record<Lang, string>;
+  description: Record<Lang, string>;
 };
 
 // 模拟日历数据
@@ -135,34 +137,34 @@ const mockCalendarEvents: CalendarEvent[] = [
     id: "1",
     date: new Date(2026, 1, 10),
     type: "medication",
-    title: "服用降压药",
-    description: "每天早上8点服用",
+    title: { zh: "服用降压药", en: "Take blood pressure medication" },
+    description: { zh: "每天早上8点服用", en: "Take it every morning at 8:00 AM" },
   },
   {
     id: "2",
     date: new Date(2026, 1, 15),
     type: "appointment",
-    title: "心内科复诊",
-    description: "王医生专家门诊",
+    title: { zh: "心内科复诊", en: "Cardiology follow-up visit" },
+    description: { zh: "王医生专家门诊", en: "Specialist clinic with Dr. Wang" },
   },
   {
     id: "3",
     date: new Date(2026, 1, 20),
     type: "followup",
-    title: "血糖复查",
-    description: "空腹血糖检测",
+    title: { zh: "血糖复查", en: "Blood glucose recheck" },
+    description: { zh: "空腹血糖检测", en: "Fasting blood glucose test" },
   },
   {
     id: "4",
     date: new Date(2026, 1, 25),
     type: "medication",
-    title: "糖尿病用药调整",
-    description: "二甲双胍增量",
+    title: { zh: "糖尿病用药调整", en: "Diabetes medication adjustment" },
+    description: { zh: "二甲双胍增量", en: "Increase metformin dosage" },
   },
 ];
 
-const formatTime = (date: Date) =>
-  new Intl.DateTimeFormat("zh-CN", {
+const formatTime = (date: Date, lang: Lang) =>
+  new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
@@ -183,12 +185,98 @@ const DEFAULT_LOADING_FLOW: LoadingStage[] = [
   { key: "quick_router", label: "意图识别", status: "running", content: "" },
 ];
 
-const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[] => {
-  if (payload.stages && payload.stages.length > 0) return payload.stages;
+const STAGE_LABELS: Record<string, { zh: string; en: string }> = {
+  quick_router: { zh: "意图识别", en: "Intent recognition" },
+  tooler: { zh: "病历/影像解析", en: "Record/Image parsing" },
+  searcher: { zh: "医学检索补充", en: "Medical search" },
+  planner: { zh: "管理计划生成", en: "Plan generation" },
+  reflector: { zh: "一致性校验", en: "Consistency check" },
+  summarize: { zh: "患者摘要", en: "Patient summary" },
+};
+
+const TEXT: Record<Lang, Record<string, string>> = {
+  zh: {
+    history: "咨询历史",
+    calendar: "健康日历",
+    newSession: "新会话",
+    year: "年",
+    month: "月",
+    medication: "用药",
+    appointment: "就诊",
+    recheck: "复查",
+    stageDetail: "查看阶段详情",
+    running: "正在执行：",
+    waitingStages: "等待后端阶段回传",
+    noStageOutput: "无阶段输出",
+    thinking: "思考中",
+    stageSkipped: "已跳过该阶段",
+    downloadReport: "下载报告 PDF",
+    welcomeTitle: "今天需要 Medora 做点什么？",
+    welcomeDesc: "我可以帮您解读病历、分析影像，并生成随访建议；也可以结合您的历史情况提供个性化的健康评估与管理方案。",
+    quickTaskReport: "请用通俗语言解释这份检查报告",
+    quickTaskFollowup: "帮我梳理复诊前需要关注的三个重点",
+    quickTaskPlan: "根据目前情况给我一周的健康管理建议",
+    placeholder: "输入您的问题，或上传病历/影像...",
+    disclaimer: "仅供参考，不构成医疗诊断建议",
+    defaultImagePrompt: "请分析这张影像",
+    defaultPdfPrompt: "请分析这份PDF报告",
+    noSummary: "未返回总结内容",
+    requestFailed: "请求失败",
+    requestTimeout: "请求超时",
+    retryLater: "请稍后重试。",
+    unknownError: "未知错误",
+    uploadedImageAlt: "上传的图片",
+    previewAlt: "预览",
+  },
+  en: {
+    history: "History",
+    calendar: "Health calendar",
+    newSession: "New session",
+    year: "Year",
+    month: "Month",
+    medication: "Medication",
+    appointment: "Appointment",
+    recheck: "Recheck",
+    stageDetail: "View stages details",
+    running: "Running:",
+    waitingStages: "waiting for backend stages",
+    noStageOutput: "No stage output",
+    thinking: "Thinking...",
+    stageSkipped: "Stage skipped",
+    downloadReport: "Download report PDF",
+    welcomeTitle: "What would you like Medora to help with today?",
+    welcomeDesc: "I can explain medical records and images, generate follow-up suggestions, and provide personalized health management guidance.",
+    quickTaskReport: "Explain this report in plain language",
+    quickTaskFollowup: "Summarize three priorities before my follow-up visit",
+    quickTaskPlan: "Create a one-week health plan from my current status",
+    placeholder: "Type your question, or upload records/images...",
+    disclaimer: "For reference only — not medical advice.",
+    defaultImagePrompt: "Please analyze this image",
+    defaultPdfPrompt: "Please analyze this PDF report",
+    noSummary: "No summary returned",
+    requestFailed: "Request failed",
+    requestTimeout: "Request timed out",
+    retryLater: "Please try again later.",
+    unknownError: "Unknown error",
+    uploadedImageAlt: "Uploaded image",
+    previewAlt: "Preview",
+  },
+};
+
+const getStageLabel = (key: string, label: string | undefined, lang: Lang) =>
+  STAGE_LABELS[key]?.[lang] || label || key;
+
+const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>, lang: Lang): StageItem[] => {
+  if (payload.stages && payload.stages.length > 0) {
+    return payload.stages.map((stage) => ({
+      ...stage,
+      label: getStageLabel(stage.key, stage.label, lang),
+    }));
+  }
   return [
     {
       key: "tooler",
-      label: "病历/影像解析",
+      label: STAGE_LABELS.tooler[lang],
       status: payload.tool ? "done" : "skipped",
       content: payload.tool || "",
       substeps: [],
@@ -196,7 +284,7 @@ const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[
     },
     {
       key: "searcher",
-      label: "医学检索补充",
+      label: STAGE_LABELS.searcher[lang],
       status: payload.search ? "done" : "skipped",
       content: payload.search || "",
       substeps: [],
@@ -204,7 +292,7 @@ const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[
     },
     {
       key: "planner",
-      label: "管理计划生成",
+      label: STAGE_LABELS.planner[lang],
       status: payload.planner ? "done" : "skipped",
       content: payload.planner || "",
       substeps: [],
@@ -212,7 +300,7 @@ const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[
     },
     {
       key: "reflector",
-      label: "一致性校验",
+      label: STAGE_LABELS.reflector[lang],
       status: payload.reflect_verify ? "done" : "skipped",
       content: payload.reflect_verify || "",
       substeps: [],
@@ -220,7 +308,7 @@ const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[
     },
     {
       key: "summarize",
-      label: "患者摘要",
+      label: STAGE_LABELS.summarize[lang],
       status: payload.summary ? "done" : "skipped",
       content: payload.summary || "",
       substeps: [],
@@ -240,6 +328,8 @@ const Chat = () => {
   const [sidebarPreview, setSidebarPreview] = useState(false);
   const [calendarPreview, setCalendarPreview] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCentered, setIsCentered] = useState(true);
+  const [lang, setLang] = useState<Lang>("zh");
   const [loadingFlow, setLoadingFlow] = useState<LoadingStage[]>([]);
   const [loadingStageIdx, setLoadingStageIdx] = useState(0);
   const [loadingVisibleCount, setLoadingVisibleCount] = useState(1);
@@ -266,7 +356,7 @@ const Chat = () => {
     if (!stages || stages.length === 0) return;
     const flow = stages.map((s) => ({
       key: s.key,
-      label: s.label,
+      label: getStageLabel(s.key, s.label, lang),
       status: s.status,
       content: s.content,
       substeps: s.substeps || [],
@@ -292,6 +382,24 @@ const Chat = () => {
 
   useEffect(() => () => eventSourceRef.current?.close(), []);
 
+  useEffect(() => {
+    setLoadingFlow((prev) =>
+      prev.map((stage) => ({
+        ...stage,
+        label: getStageLabel(stage.key, stage.label, lang),
+      })),
+    );
+    setMessages((prev) =>
+      prev.map((msg) => ({
+        ...msg,
+        stages: msg.stages?.map((stage) => ({
+          ...stage,
+          label: getStageLabel(stage.key, stage.label, lang),
+        })),
+      })),
+    );
+  }, [lang]);
+
   // 页面加载时临时以 "标题预览" 形式展开左侧面板，3 秒后恢复为未展开状态
   useEffect(() => {
     setSidebarPreview(true);
@@ -306,10 +414,13 @@ const Chat = () => {
     }, 3000);
     return () => clearTimeout(t);
   }, []);
+  const toggleLang = () => setLang((s) => (s === "zh" ? "en" : "zh"));
+
   const handleSend = async () => {
+    setIsCentered(false);
     const text = input.trim();
     if (!text && !previewImage && !selectedPdfFile) return;
-    const outboundText = text || (selectedPdfFile ? "请分析这份PDF报告" : "请分析这张影像");
+    const outboundText = text || (selectedPdfFile ? TEXT[lang].defaultPdfPrompt : TEXT[lang].defaultImagePrompt);
 
     const userMsg: UiMessage = {
       id: crypto.randomUUID(),
@@ -320,7 +431,12 @@ const Chat = () => {
     };
     setMessages((m) => [...m, userMsg]);
     setIsLoading(true);
-    setLoadingFlow(DEFAULT_LOADING_FLOW);
+    setLoadingFlow(
+      DEFAULT_LOADING_FLOW.map((stage) => ({
+        ...stage,
+        label: getStageLabel(stage.key, stage.label, lang),
+      })),
+    );
     setLoadingStageIdx(0);
     setLoadingVisibleCount(1);
 
@@ -374,15 +490,15 @@ const Chat = () => {
         payload = { detail: raw };
       }
       if (!response.ok) {
-        throw new Error(payload.detail || `请求失败: ${response.status}`);
+        throw new Error(payload.detail || `${TEXT[lang].requestFailed}: ${response.status}`);
       }
 
       const aiMsg: UiMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: payload.summary || "未返回总结内容",
+        content: payload.summary || TEXT[lang].noSummary,
         timestamp: new Date(),
-        stages: buildStagesFromLegacy(payload),
+        stages: buildStagesFromLegacy(payload, lang),
         reportDownloadUrl: payload.report_download_url || undefined,
       };
       setMessages((m) => [...m, aiMsg]);
@@ -397,8 +513,8 @@ const Chat = () => {
         role: "assistant",
         content:
           error instanceof DOMException && error.name === "AbortError"
-            ? `请求超时（>${REQUEST_TIMEOUT_MS / 1000}s），请稍后重试。`
-            : `请求失败：${error instanceof Error ? error.message : "未知错误"}`,
+            ? `${TEXT[lang].requestTimeout} (> ${REQUEST_TIMEOUT_MS / 1000}s), ${TEXT[lang].retryLater}`
+            : `${TEXT[lang].requestFailed}: ${error instanceof Error ? error.message : TEXT[lang].unknownError}`,
         timestamp: new Date(),
       };
       setMessages((m) => [...m, aiMsg]);
@@ -447,22 +563,22 @@ const Chat = () => {
 
   const EMPTY_TASKS = [
     {
-      text: "请用通俗语言解释这份检查报告",
+      text: TEXT[lang].quickTaskReport,
       hasIcon: true,
       onClick: () => {
-        setInput("请用通俗语言解释这份检查报告");
+        setInput(TEXT[lang].quickTaskReport);
         fileRef.current?.click();
       },
     },
     {
-      text: "帮我梳理复诊前需要关注的三个重点",
+      text: TEXT[lang].quickTaskFollowup,
       hasIcon: false,
-      onClick: () => handleQuickPrompt("帮我梳理复诊前需要关注的三个重点"),
+      onClick: () => handleQuickPrompt(TEXT[lang].quickTaskFollowup),
     },
     {
-      text: "根据目前情况给我一周的健康管理建议",
+      text: TEXT[lang].quickTaskPlan,
       hasIcon: false,
-      onClick: () => handleQuickPrompt("根据目前情况给我一周的健康管理建议"),
+      onClick: () => handleQuickPrompt(TEXT[lang].quickTaskPlan),
     },
   ];
 
@@ -493,7 +609,7 @@ const Chat = () => {
       {/* Main layout */}
       <div className="flex flex-col h-full">
         {/* Top bar */}
-          <header className="px-4 h-16 flex items-center shrink-0 flex-shrink-0">
+        <header className="px-4 h-16 flex items-center shrink-0 flex-shrink-0">
           <Link to="/">
             <motion.div
               className="flex items-center gap-2"
@@ -507,6 +623,28 @@ const Chat = () => {
               <span className="font-semibold text-lg" style={{ color: '#0e0b40ff'}}>Medora</span>
             </motion.div>
           </Link>
+          <div className="absolute right-4 top-0 h-16 flex items-center">
+            <button
+              type="button"
+              onClick={toggleLang}
+              className="absolute top-1/2 -translate-y-1/2"
+              style={{ left: "calc(100% - 48px)" }}
+              aria-label="Toggle language"
+            >
+              <Button
+                className="w-10 h-10 p-0 rounded-full flex items-center justify-center transition-all hover:scale-105"
+                style={{
+                  background: "rgba(14,11,64,0.8)",
+                  backdropFilter: "blur(20px)",
+                  WebkitBackdropFilter: "blur(20px)",
+                  border: "2px solid rgba(110, 106, 183, 0.4)",
+                  boxShadow: "0 4px 12px rgba(14,11,64,0.45), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(14,11,64,0.2)",
+                }}
+              >
+                <span className="text-white font-medium">{lang === "zh" ? "EN" : "中"}</span>
+              </Button>
+            </button>
+          </div>
         </header>
 
         {/* Main content with sidebar buttons */}
@@ -523,7 +661,7 @@ const Chat = () => {
                   });
                 }}
                 className="w-12 h-12 rounded-full flex items-center justify-center transition-all backdrop-blur-md bg-white/30 text-muted-foreground hover:text-foreground hover:bg-white/50 border border-white/20 shadow-sm"
-                title="咨询历史"
+                title={TEXT[lang].history}
                 style={{
                   boxShadow: '0 2px 8px rgba(255,255,255,0.3), inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(255,255,255,0.2)'
                 }}
@@ -537,7 +675,7 @@ const Chat = () => {
                     setSidebarOpen(false);
                   }}
                   className="w-12 h-12 rounded-full flex items-center justify-center transition-all backdrop-blur-md bg-white/30 text-muted-foreground hover:text-foreground hover:bg-white/50 border border-white/20 shadow-sm"
-                  title="健康日历"
+                  title={TEXT[lang].calendar}
                   style={{
                     boxShadow: '0 2px 8px rgba(255,255,255,0.3), inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(255,255,255,0.2)'
                   }}
@@ -575,14 +713,14 @@ const Chat = () => {
                       className="flex items-center gap-2 text-foreground hover:opacity-80 transition-opacity"
                     >
                       <MessageSquare className="w-5 h-5" />
-                      <span className="font-medium text-sm">咨询历史</span>
+                      <span className="font-medium text-sm">{TEXT[lang].history}</span>
                     </button>
                   </div>
                   {/* Content: preview 时不渲染 */}
                   {!sidebarPreview && (
                     <div className="flex-1 overflow-y-auto p-2 space-y-1">
                       <Button variant="ghost" className="w-full justify-start gap-3 mb-2 rounded-xl text-sm h-10 hover:bg-white/50 text-foreground hover:text-foreground">
-                        <Plus className="w-5 h-5" /> 新会话
+                        <Plus className="w-5 h-5" /> {TEXT[lang].newSession}
                       </Button>
                       {sessions.map((s) => (
                         <button
@@ -629,7 +767,7 @@ const Chat = () => {
                       className="flex items-center gap-2 text-foreground hover:opacity-80 transition-opacity"
                     >
                       <Calendar className="w-5 h-5" />
-                      <span className="font-medium text-sm">健康日历</span>
+                      <span className="font-medium text-sm">{TEXT[lang].calendar}</span>
                     </button>
                   </div>
                   {/* Content: preview 时不渲染 */}
@@ -666,7 +804,7 @@ const Chat = () => {
                               )}
                           </div>
 
-                          <span className="text-sm">年</span>
+                          <span className="text-sm">{TEXT[lang].year}</span>
 
                           <div className="relative">
                             <button
@@ -696,7 +834,7 @@ const Chat = () => {
                                 </div>
                               )}
                           </div>
-                          <span className="text-sm">月</span>
+                          <span className="text-sm">{TEXT[lang].month}</span>
                         </div>
                       </div>
 
@@ -714,8 +852,8 @@ const Chat = () => {
                           >
                             <div className="flex items-start justify-between">
                               <div>
-                                <p className="text-sm font-medium">{event.title}</p>
-                                <p className="text-xs text-muted-foreground mt-0.5">{event.description}</p>
+                                <p className="text-sm font-medium">{event.title[lang]}</p>
+                                <p className="text-xs text-muted-foreground mt-0.5">{event.description[lang]}</p>
                               </div>
                               <span className="text-xs text-muted-foreground">
                                 {event.date.getMonth() + 1}/{event.date.getDate()}
@@ -730,15 +868,15 @@ const Chat = () => {
                         <div className="flex items-center justify-start w-full gap-4 pl-3 text-xs text-muted-foreground">
                           <div className="flex items-center gap-1">
                             <span className="w-2 h-2 rounded-full bg-blue-500" />
-                            <span>用药</span>
+                            <span>{TEXT[lang].medication}</span>
                           </div>
                           <div className="flex items-center gap-1">
                             <span className="w-2 h-2 rounded-full bg-red-500" />
-                            <span>就诊</span>
+                            <span>{TEXT[lang].appointment}</span>
                           </div>
                           <div className="flex items-center gap-1">
                             <span className="w-2 h-2 rounded-full bg-amber-500" />
-                            <span>复查</span>
+                            <span>{TEXT[lang].recheck}</span>
                           </div>
                         </div>
                       </div>
@@ -752,8 +890,11 @@ const Chat = () => {
       {/* Main chat area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
-          <div className="max-w-4xl mx-auto flex flex-col min-h-full">
+        <div ref={scrollRef} className={`flex-1 overflow-y-auto px-4 py-6 ${isCentered ? "flex" : ""}`}>
+          <div
+            className={isCentered ? "max-w-4xl mx-auto flex-1 flex flex-col justify-center" : "max-w-4xl mx-auto flex flex-col min-h-full"}
+            style={isCentered ? { transform: "translateY(-6vh)" } : undefined}
+          >
           {messages.map((msg, idx) => {
             const isSingleLine =
               typeof msg.content === "string" && !msg.content.includes("\n") && msg.content.length <= 60;
@@ -769,7 +910,7 @@ const Chat = () => {
                   <div className="max-w-[85%] md:max-w-[70%] space-y-2">
                     {msg.imageUrl && (
                       <div className="rounded-2xl overflow-hidden border border-border/50 glass-card">
-                        <img src={msg.imageUrl} alt="上传的图片" className="max-h-64 object-contain w-full" />
+                        <img src={msg.imageUrl} alt={TEXT[lang].uploadedImageAlt} className="max-h-64 object-contain w-full" />
                       </div>
                     )}
                     <div
@@ -794,7 +935,7 @@ const Chat = () => {
                       <p className="text-sm leading-relaxed ">{msg.content}</p>
                     </div>
                     <p className="text-[11px] text-muted-foreground text-right pr-1">
-                      {formatTime(msg.timestamp)}
+                      {formatTime(msg.timestamp, lang)}
                     </p>
                   </div>
                 ) : (
@@ -814,7 +955,7 @@ const Chat = () => {
                           }}
                         >
                           <FileDown className="w-4 h-4 mr-2" />
-                          下载报告 PDF
+                          {TEXT[lang].downloadReport}
                         </Button>
                       </div>
                     )}
@@ -825,7 +966,7 @@ const Chat = () => {
                     {msg.stages && msg.stages.length > 0 && (
                       <details className="pl-1">
                         <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
-                          查看阶段详情
+                          {TEXT[lang].stageDetail}
                         </summary>
                         <div className="space-y-2 mt-2">
                           {msg.stages.map((stage) => {
@@ -843,7 +984,7 @@ const Chat = () => {
                                 }}
                               >
                                 <p className="text-xs font-semibold" style={{ color: '#0e0b40ff' }}>{stage.label}</p>
-                                <p className="text-xs mt-1 max-h-24 overflow-auto" style={{ color: '#0e0b40ff' }}>{stage.content || "无阶段输出"}</p>
+                                <p className="text-xs mt-1 max-h-24 overflow-auto" style={{ color: '#0e0b40ff' }}>{stage.content || TEXT[lang].noStageOutput}</p>
                                 {stage.substeps && stage.substeps.length > 0 && (
                                   <div className="mt-2 space-y-1">
                                     {stage.substeps.map((sub) => {
@@ -881,30 +1022,159 @@ const Chat = () => {
 
           {messages.length === 0 && (
             <motion.div
-              className="flex justify-center mt-auto"
+              className={isCentered ? "flex justify-center items-center mt-0 h-full" : "flex justify-center mt-auto"}
               initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
             >
-              <div className="p-6 rounded-3xl max-w-4xl mx-auto">
-                <div className="mt-4 text-3xl font-extrabold text-foreground/90 leading-relaxed"  style={{ color: '#0e0b40ff'}}>
-                  今天需要 Medora 做点什么？
-                </div>
-                <div className="mt-2 text-muted-foreground leading-relaxed">
-                  我可以帮您解读病历、分析影像，并生成随访建议；也可以结合您的历史情况提供个性化的健康评估与管理方案。
-                </div>
-                <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  {EMPTY_TASKS.map((task) => (
-                    <button
-                      key={task.text}
-                      type="button"
-                      className="text-left p-4 rounded-2xl border border-border/60 bg-white/60 hover:bg-white/80 transition-colors flex items-center gap-2"
-                      onClick={task.onClick}
-                    >
-                      {task.hasIcon && <Paperclip className="w-4 h-4 text-muted-foreground" />}
-                      <span className="text-sm">{task.text}</span>
-                    </button>
-                  ))}
+              <div className="p-6 rounded-3xl max-w-4xl mx-auto w-full">
+                <div className="flex flex-col items-center">
+                  <div className="mt-4 text-3xl font-extrabold text-foreground/90 leading-relaxed" style={{ color: "#0e0b40ff" }}>
+                    {TEXT[lang].welcomeTitle}
+                  </div>
+                  <div className="mt-2 text-muted-foreground leading-relaxed text-center max-w-2xl">
+                    {TEXT[lang].welcomeDesc}
+                  </div>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-3 w-full">
+                    {EMPTY_TASKS.map((task) => (
+                      <button
+                        key={task.text}
+                        type="button"
+                        className="p-4 rounded-2xl border border-border/60 bg-white/60 hover:bg-white/80 transition-colors flex items-center justify-center text-center"
+                        onClick={task.onClick}
+                      >
+                        <span className="text-sm">{task.text}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {isCentered && (
+                    <div className="mt-6 w-full px-4">
+                      <div className="flex items-end gap-2 max-w-4xl mx-auto">
+                        <div className="flex justify-center h-[46px]">
+                          <Button
+                            size="icon"
+                            className="rounded-full shrink-0 border-0 transition-all hover:shadow-md w-9 h-9"
+                            style={{
+                              background: "rgba(255, 255, 255, 0.8)",
+                              backdropFilter: "blur(20px)",
+                              border: "2px solid rgba(255, 255, 255, 0.9)",
+                              boxShadow: "0 4px 16px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)",
+                            }}
+                            onClick={() => fileRef.current?.click()}
+                          >
+                            <Paperclip className="w-4 h-4" style={{ color: "rgb(99, 102, 241)" }} />
+                          </Button>
+                        </div>
+                        <div
+                          className="flex-1 p-2 rounded-[36px] min-w-0"
+                          style={{
+                            background: "rgba(255, 255, 255, 0.35)",
+                            backdropFilter: "blur(20px)",
+                            border: "2px solid rgba(255, 255, 255, 0.4)",
+                            boxShadow: "0 8px 32px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)",
+                          }}
+                        >
+                          <input type="file" ref={fileRef} className="hidden" accept="image/*,application/pdf" onChange={handleFile} />
+                          <Textarea
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder={TEXT[lang].placeholder}
+                            className="w-full min-h-[36px] max-h-24 resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-foreground placeholder:text-muted-foreground py-2"
+                            style={{ fieldSizing: "content" as any }}
+                          />
+                        </div>
+                        <div className="flex justify-center h-[46px]">
+                          <Button
+                            size="icon"
+                            className="rounded-full shrink-0 border-0 transition-all hover:shadow-md w-9 h-9"
+                            style={{
+                              background: "rgba(99, 102, 241, 0.8)",
+                              backdropFilter: "blur(20px)",
+                              border: "2px solid rgba(165,180,252, 0.8)",
+                              boxShadow: "0 4px 16px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -1px 0 rgba(99, 102, 241, 0.2)",
+                            }}
+                            onClick={handleSend}
+                            disabled={isLoading || (!input.trim() && !previewImage && !selectedPdfFile)}
+                          >
+                            <Send className="w-4 h-4 text-primary-foreground" />
+                          </Button>
+                        </div>
+                      </div>
+                      {previewImage && (
+                        <AnimatePresence>
+                          <motion.div
+                            className="max-w-4xl mx-auto px-4 w-full mt-3"
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                          >
+                            <div
+                              className="p-2 pb-0 relative inline-flex items-center gap-2 rounded-xl group"
+                              style={{
+                                backdropFilter: "blur(20px)",
+                                WebkitBackdropFilter: "blur(20px)",
+                                justifyContent: "flex-start",
+                              }}
+                            >
+                              <img src={previewImage} alt={TEXT[lang].previewAlt} className="h-20 object-cover rounded-sm" />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="rounded-lg h-8 w-8 absolute right-3 top-3 opacity-0 group-hover:opacity-100 transition-opacity bg-white/50 hover:bg-white transition-colors"
+                                onClick={() => {
+                                  setPreviewImage(null);
+                                  setSelectedImageFile(null);
+                                  if (fileRef.current) fileRef.current.value = "";
+                                }}
+                              >
+                                <X className="w-4 h-4 text-black" />
+                              </Button>
+                            </div>
+                          </motion.div>
+                        </AnimatePresence>
+                      )}
+                      {selectedPdfFile && (
+                        <AnimatePresence>
+                          <motion.div
+                            className="max-w-4xl mx-auto px-4 w-full mt-3"
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                          >
+                            <div
+                              className="p-2 pb-0 relative inline-flex items-center gap-2 rounded-xl group"
+                              style={{
+                                backdropFilter: "blur(20px)",
+                                WebkitBackdropFilter: "blur(20px)",
+                                justifyContent: "flex-start",
+                              }}
+                            >
+                              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/40">
+                                <svg className="w-5 h-5 text-red-500 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+                                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM14 3.5L18.5 8H14V3.5zM6 20V4h7v5h5v11H6z" />
+                                  <text x="7" y="17" fontSize="6" fontWeight="bold" fill="currentColor">PDF</text>
+                                </svg>
+                                <span className="text-sm text-foreground truncate max-w-[200px]">{selectedPdfFile.name}</span>
+                              </div>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="rounded-lg h-8 w-8 absolute right-3 top-3 opacity-0 group-hover:opacity-100 transition-opacity bg-white/50 hover:bg-white transition-colors"
+                                onClick={() => {
+                                  setSelectedPdfFile(null);
+                                  if (fileRef.current) fileRef.current.value = "";
+                                }}
+                              >
+                                <X className="w-4 h-4 text-black" />
+                              </Button>
+                            </div>
+                          </motion.div>
+                        </AnimatePresence>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </motion.div>
@@ -930,7 +1200,7 @@ const Chat = () => {
                     ))}
                   </div>
                   <span className="text-sm text-muted-foreground">
-                    正在执行：{loadingFlow[loadingStageIdx]?.label || "等待后端阶段回传"}
+                    {TEXT[lang].running} {loadingFlow[loadingStageIdx]?.label || TEXT[lang].waitingStages}
                   </span>
                 </div>
                 <div className="mt-4 space-y-2">
@@ -939,7 +1209,7 @@ const Chat = () => {
                     const isCurrent = idx === loadingStageIdx;
                     const stageText = (stage.content || "").trim();
                     const displayContent = stageText
-                      || (isCurrent ? "思考中" : (stage.status === "skipped" ? "已跳过该阶段" : ""));
+                      || (isCurrent ? TEXT[lang].thinking : (stage.status === "skipped" ? TEXT[lang].stageSkipped : ""));
                     const substeps = stage.substeps || [];
                     const recentSubsteps = substeps.slice(Math.max(0, substeps.length - 4));
                     return (
@@ -1019,7 +1289,7 @@ const Chat = () => {
 
         {/* Image preview (aligned with input, delete button shows on hover) */}
         <AnimatePresence>
-          {previewImage && (
+          {previewImage && !isCentered && (
             <motion.div
               className="max-w-4xl mx-auto px-4 w-full "
               initial={{ height: 0, opacity: 0 }}
@@ -1033,7 +1303,7 @@ const Chat = () => {
                 WebkitBackdropFilter: 'blur(20px)',
               }}
             >
-                <img src={previewImage} alt="预览" className="h-20 object-cover rounded-sm" />
+                <img src={previewImage} alt={TEXT[lang].previewAlt} className="h-20 object-cover rounded-sm" />
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1053,7 +1323,7 @@ const Chat = () => {
 
         {/* PDF preview */}
         <AnimatePresence>
-          {selectedPdfFile && (
+          {selectedPdfFile && !isCentered && (
             <motion.div
               className="max-w-4xl mx-auto px-4 w-full"
               initial={{ height: 0, opacity: 0 }}
@@ -1091,7 +1361,8 @@ const Chat = () => {
         </AnimatePresence>
 
         {/* Input */}
-        <div className="p-4 shrink-0">
+        {!isCentered && (
+          <div className="p-4 shrink-0">
           <div className="flex items-end gap-2 max-w-4xl mx-auto">
             <div className="flex justify-center h-[46px]">
               <Button
@@ -1122,7 +1393,7 @@ const Chat = () => {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="输入您的问题，或上传病历/影像..."
+                placeholder={TEXT[lang].placeholder}
                 className="w-full min-h-[36px] max-h-24 resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-foreground placeholder:text-muted-foreground py-2"
                 style={{fieldSizing: 'content' as any }}
               />
@@ -1145,9 +1416,15 @@ const Chat = () => {
             </div>
           </div>
           <p className="text-xs text-muted-foreground text-center mt-2">
-            仅供参考，不构成医疗诊断建议
+            {TEXT[lang].disclaimer}
           </p>
         </div>
+        )}
+        {isCentered && (
+          <p className="text-xs text-muted-foreground text-center" style={{ position: "fixed", left: 0, right: 0, bottom: 12 }}>
+            {TEXT[lang].disclaimer}
+          </p>
+        )}
       </div>
     </div>
     {/* Close flex-col main layout */}
