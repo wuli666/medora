@@ -3,6 +3,8 @@ import tempfile
 import time
 import re
 import uuid
+from io import BytesIO
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -23,6 +25,7 @@ from src.llm.model_factory import get_chat_model
 from src.prompts.prompts import INTENT_CLASSIFY_PROMPT
 from src.runtime.progress import begin_run, complete_run, fail_run, get_run, next_event, subscribe, to_sse, unsubscribe
 from src.utils.pdf_parser import parse_pdf
+from src.utils.report_pdf import build_report_pdf_bytes
 from src.utils.db import init_db
 from src.utils.image_utils import image_bytes_to_base64
 
@@ -46,6 +49,13 @@ _MEDICAL_KEYWORDS = {
     "糖尿病", "胸闷", "头痛", "咳嗽", "发热", "疼", "痛", "医生", "住院", "门诊",
     "体检", "检验", "处方", "不适", "炎症",
 }
+
+
+def _is_formal_medical_report(summary_struct: dict | None) -> bool:
+    if not isinstance(summary_struct, dict):
+        return False
+    title = str(summary_struct.get("report_title", "")).strip()
+    return title == "健康管理与随访报告"
 
 
 def _looks_medical(text: str) -> bool:
@@ -258,10 +268,43 @@ async def run_multi_agent(
         search=search_output,
         reflect_verify=reflect_output,
         stages=stages,
+        summary_struct=result.get("summary_struct"),
+        report_download_url=(
+            f"/api/multi-agent/report/{run_id}.pdf"
+            if summary_output and _is_formal_medical_report(result.get("summary_struct"))
+            else None
+        ),
     )
     await complete_run(run_id, response_payload.model_dump())
     logger.info("[run_multi_agent] finished summary_len=%s", len(summary_output or ""))
     return response_payload
+
+
+@app.get("/api/multi-agent/report/{run_id}.pdf")
+async def download_report_pdf(run_id: str):
+    snapshot = await get_run(run_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="未找到对应运行记录。")
+    if not snapshot.get("done"):
+        raise HTTPException(status_code=409, detail="当前任务尚未完成，请稍后再下载。")
+
+    response_payload = snapshot.get("response") or {}
+    summary_text = str(response_payload.get("summary", "")).strip()
+    if not summary_text:
+        raise HTTPException(status_code=404, detail="当前运行暂无可导出的报告内容。")
+
+    summary_struct = response_payload.get("summary_struct")
+    if not _is_formal_medical_report(summary_struct):
+        raise HTTPException(status_code=404, detail="当前运行未生成正式医疗报告。")
+
+    pdf_bytes = build_report_pdf_bytes(summary_struct=summary_struct, summary_text=summary_text, run_id=run_id)
+    filename = f"health_report_{run_id[:8] or 'report'}.pdf"
+    quoted = quote(filename)
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+        "Cache-Control": "no-cache",
+    }
+    return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
 @app.get("/api/multi-agent/events/{run_id}")

@@ -87,10 +87,24 @@ async def _invoke_structured(llm, schema, messages):
 async def analyze_medical_text(
     medical_text: Annotated[
         str,
-        "医学文本分析输入。只要用户提供了症状/病史/检查报告/用药信息中的任一项，就应优先调用本工具；参数必须为非空原文文本。",
+        "医学文本分析输入。只要用户提供了病历文字信息，就应优先调用本工具；参数必须为非空原文文本。",
     ]
 ) -> str:
-    """医学文本证据提取工具（返回 envelope JSON 字符串）。"""
+    """医学文本证据提取工具（返回 envelope JSON 字符串）。
+
+    Planner 调用策略:
+    1. 只要输入包含医学文字信息（主诉/症状/病史/检查结果/诊断/用药），默认应调用。
+    3. 仅在用户完全没有可分析医学文本时才可跳过。
+
+    参数要求:
+    - `medical_text`: 非空，尽量保留用户原始医学描述，避免过度改写。
+
+    成功字段:
+    - `data.analysis_text`: 结构化医学分析结论（供 planner/reflector/summarizer 使用）。
+
+    常见错误码:
+    - `MODEL_UNAVAILABLE`、`UPSTREAM_ERROR`。
+    """
     _logger.debug(f"Invoking analyze_medical_text with input: {medical_text[:100]}...")
     start_ts = time.perf_counter()
 
@@ -141,7 +155,23 @@ async def analyze_medical_image(
         "临床上下文（主诉/病史/部位/时长/既往检查），建议尽量填写以提升影像判读准确性；可为空。",
     ] = "",
 ) -> str:
-    """医学图像判读工具（返回 envelope JSON 字符串）。"""
+    """医学图像判读工具（返回 envelope JSON 字符串）。
+
+    Planner 调用策略（提高召回）:
+    1. 只要接收到任何医学图像或检查截图，应调用本工具，不要仅依赖文本推断。
+    3. 图像存在时，本工具通常应与 `analyze_medical_text` 并行调用以补齐证据。
+
+    参数要求:
+    - `image_base64`: 必须是可解码图像内容（支持 data URL）。
+    - `clinical_context`: 推荐填写，至少包含症状或检查背景，可显著提高输出质量。
+
+    成功字段:
+    - `data.analysis_text`: 图像分析结果。
+    - `data.key_facts`: 关键发现（当前通常为空列表）。
+
+    常见错误码:
+    - `MODEL_UNAVAILABLE`、`INVALID_INPUT`、`UPSTREAM_ERROR`。
+    """
     start_ts = time.perf_counter()
 
     llm = get_chat_model("TOOLER_IMAGE", default_model="qwen-plus", temperature=0.2)

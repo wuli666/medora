@@ -27,6 +27,8 @@ class MultiAgentResponse(BaseModel):
     search: str
     reflect_verify: str
     stages: list[StageItem]
+    summary_struct: dict | None = None
+    report_download_url: str | None = None
 
 
 class IntentRouteResponse(BaseModel):

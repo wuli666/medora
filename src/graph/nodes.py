@@ -123,14 +123,18 @@ def _render_reflection_text(report: ReflectReport) -> str:
 
 
 def _render_summary_text(summary: PatientSummary) -> str:
-    return (
-        "1. 关键发现\n"
-        f"{_join_lines(summary.key_findings) or '- 暂无'}\n\n"
-        "2. 建议行动\n"
-        f"{_join_lines(summary.action_items) or '- 暂无'}\n\n"
-        "3. 注意事项\n"
-        f"{_join_lines(summary.cautions) or '- 暂无'}"
-    )
+    title = summary.report_title.strip() or "健康管理与随访报告"
+    brief_summary = summary.brief_summary.strip() or "已结合当前资料形成健康管理建议。"
+    sections = [
+        f"# {title}",
+        f"## 摘要\n{brief_summary}",
+        f"## 关键发现\n{_join_lines(summary.key_findings) or '- 暂无'}",
+    ]
+    if summary.medication_reminders:
+        sections.append(f"## 用药提醒\n{_join_lines(summary.medication_reminders)}")
+    if summary.follow_up_tips:
+        sections.append(f"## 随访提示\n{_join_lines(summary.follow_up_tips)}")
+    return "\n\n".join(sections)
 
 
 def _render_merged_analysis_text(merged: MergedMedicalAnalysis) -> str:
@@ -161,13 +165,47 @@ async def _invoke_structured(
     schema: type[BaseModel],
     messages: list,
 ) -> tuple[BaseModel, AIMessage]:
+    if llm is None:
+        raise RuntimeError("LLM unavailable for structured invocation")
 
-    structured_llm = llm.with_structured_output(schema)
-    response = await structured_llm.ainvoke(messages)
-    if isinstance(response, schema):
-        parsed_model = response
-    else:
-        parsed_model = schema.model_validate(response)
+    parsed_model: BaseModel | None = None
+    try:
+        structured_llm = llm.with_structured_output(
+            schema,
+            include_raw=True,
+            method="json_schema",
+            strict=True,
+        )
+        response = await structured_llm.ainvoke(messages)
+        if isinstance(response, dict):
+            parsed = response.get("parsed")
+            if isinstance(parsed, schema):
+                parsed_model = parsed
+            else:
+                parsed_model = schema.model_validate(parsed)
+    except TypeError:
+        parsed_model = None
+
+    if parsed_model is None:
+        try:
+            structured_llm = llm.with_structured_output(schema, include_raw=True)
+            response = await structured_llm.ainvoke(messages)
+            if isinstance(response, dict):
+                parsed = response.get("parsed")
+                if isinstance(parsed, schema):
+                    parsed_model = parsed
+                else:
+                    parsed_model = schema.model_validate(parsed)
+        except TypeError:
+            parsed_model = None
+
+    if parsed_model is None:
+        structured_llm = llm.with_structured_output(schema)
+        response = await structured_llm.ainvoke(messages)
+        if isinstance(response, schema):
+            parsed_model = response
+        else:
+            parsed_model = schema.model_validate(response)
     return parsed_model, AIMessage(content=parsed_model.model_dump_json(ensure_ascii=False))
 
 
@@ -810,9 +848,11 @@ async def summarize_node(state: MedAgentState) -> dict:
         return {
             "summary": summary_text,
             "summary_struct": {
+                "report_title": "通用咨询回复",
+                "brief_summary": summary_text[:60],
                 "key_findings": ["非医疗咨询"],
-                "action_items": ["已按通用助手方式回复"],
-                "cautions": [],
+                "medication_reminders": [],
+                "follow_up_tips": [],
             },
             "messages": [ai_response],
         }
@@ -824,10 +864,10 @@ async def summarize_node(state: MedAgentState) -> dict:
             SystemMessage(content=SUMMARIZE_PROMPT),
             HumanMessage(
                 content=(
+                    f"用户病历输入:\n{state.get('raw_text', '')}\n\n"
                     f"医学分析:\n{state.get('merged_analysis', '')}\n\n"
                     f"知识补充:\n{state.get('search_results', '')}\n\n"
                     f"健康管理方案:\n{state.get('plan', '')}\n\n"
-                    f"质量审查意见:\n{state.get('reflection', '')}"
                 )
             ),
         ],

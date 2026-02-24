@@ -238,9 +238,11 @@ def test_summarize_node_writes_summary_struct_and_ai_message(monkeypatch: pytest
         assert schema is PatientSummary
         return (
             PatientSummary(
+                report_title="健康管理与随访报告",
+                brief_summary="近期以头痛为主，当前建议先规律休息并持续观察变化。",
                 key_findings=["近期头痛"],
-                action_items=["补水休息"],
-                cautions=["加重及时就医"],
+                medication_reminders=["布洛芬 0.2g，饭后按需服用，日内不超过说明书剂量。"],
+                follow_up_tips=["若头痛持续3天以上或明显加重，请在3天内复查。"],
             ),
             AIMessage(content="summary_struct"),
         )
@@ -261,7 +263,11 @@ def test_summarize_node_writes_summary_struct_and_ai_message(monkeypatch: pytest
     )
     result = asyncio.run(nodes.summarize_node(state))
     assert isinstance(result["summary_struct"], dict)
-    assert "1. 关键发现" in result["summary"]
+    assert "# 健康管理与随访报告" in result["summary"]
+    assert "## 摘要" in result["summary"]
+    assert "## 关键发现" in result["summary"]
+    assert "## 用药提醒" in result["summary"]
+    assert "## 随访提示" in result["summary"]
     assert isinstance(result["messages"][0], AIMessage)
 
 

@@ -125,17 +125,25 @@ class ReflectReport(BaseModel):
 
 
 class PatientSummary(BaseModel):
+    report_title: str = Field(
+        default="健康管理与随访报告",
+        description="Fixed report title for patient-facing final report.",
+    )
+    brief_summary: str = Field(
+        default="",
+        description="A short plain-language summary, roughly around 50 Chinese characters.",
+    )
     key_findings: list[str] = Field(
         default_factory=list,
         description="Patient-facing plain-language key findings from the full workflow with high readability.",
     )
-    action_items: list[str] = Field(
+    medication_reminders: list[str] = Field(
         default_factory=list,
-        description="Clear next actions including medication reminders, follow-up timing, and self-management tasks.",
+        description="Medication name, dose, timing and cautions that patients can execute safely.",
     )
-    cautions: list[str] = Field(
+    follow_up_tips: list[str] = Field(
         default_factory=list,
-        description="Safety cautions, red flags, and when to seek timely care during treatment and rehabilitation.",
+        description="Follow-up timing, trigger conditions, and recheck suggestions.",
     )
 
 

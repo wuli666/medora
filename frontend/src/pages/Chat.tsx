@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Sparkles, Send, Paperclip, Plus, MessageSquare, X, Calendar,
+  Sparkles, Send, Paperclip, Plus, MessageSquare, X, Calendar, FileDown,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
@@ -42,10 +42,36 @@ function useTypewriter(text: string, speed = 15) {
 function AssistantBubble({ content, isLatest }: { content: string; isLatest: boolean }) {
   const { displayed, done } = useTypewriter(content, isLatest ? 12 : 0);
   const show = isLatest && !done ? displayed : content;
+  const isReportLike = /(^#\s)|(\n##\s)/m.test(show);
 
   return (
-    <div className="w-full prose prose-sm prose-neutral dark:prose-invert max-w-none py-2">
-      <ReactMarkdown>{show}</ReactMarkdown>
+    <div
+      className={`w-full max-w-none py-2 ${
+        isReportLike
+          ? "prose prose-sm prose-slate max-w-none rounded-2xl p-4 border border-white/50 bg-white/55 shadow-[0_8px_24px_rgba(148,163,184,0.18)]"
+          : "prose prose-sm prose-neutral dark:prose-invert"
+      }`}
+      style={
+        isReportLike
+          ? {
+              backdropFilter: "blur(14px)",
+              WebkitBackdropFilter: "blur(14px)",
+            }
+          : undefined
+      }
+    >
+      <ReactMarkdown
+        components={{
+          h1: ({ children }) => <h1 className="text-xl font-bold mb-3 text-slate-800">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-base font-semibold mt-4 mb-2 text-slate-700">{children}</h2>,
+          p: ({ children }) => <p className="leading-7 text-slate-700 my-1">{children}</p>,
+          ul: ({ children }) => <ul className="list-disc pl-5 my-1 space-y-1 text-slate-700">{children}</ul>,
+          li: ({ children }) => <li className="leading-6">{children}</li>,
+          strong: ({ children }) => <strong className="font-semibold text-slate-800">{children}</strong>,
+        }}
+      >
+        {show}
+      </ReactMarkdown>
       {isLatest && !done && (
         <span className="inline-block w-2 h-4 bg-primary/60 rounded-sm animate-pulse ml-0.5" />
       )}
@@ -77,10 +103,13 @@ type MultiAgentResponse = {
   search: string;
   reflect_verify: string;
   stages: StageItem[];
+  summary_struct?: Record<string, unknown>;
+  report_download_url?: string;
 };
 
 type UiMessage = ChatMessage & {
   stages?: StageItem[];
+  reportDownloadUrl?: string;
 };
 type LoadingStage = {
   key: string;
@@ -354,6 +383,7 @@ const Chat = () => {
         content: payload.summary || "未返回总结内容",
         timestamp: new Date(),
         stages: buildStagesFromLegacy(payload),
+        reportDownloadUrl: payload.report_download_url || undefined,
       };
       setMessages((m) => [...m, aiMsg]);
       setInput("");
@@ -407,6 +437,12 @@ const Chat = () => {
 
   const handleQuickPrompt = (text: string) => {
     setInput(text);
+  };
+
+  const handleDownloadReport = (reportPath: string) => {
+    if (!reportPath) return;
+    const url = `${API_BASE}${reportPath}`;
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const EMPTY_TASKS = [
@@ -763,6 +799,25 @@ const Chat = () => {
                   </div>
                 ) : (
                   <div className="space-y-2">
+                    {msg.reportDownloadUrl && (
+                      <div className="flex justify-start mb-1">
+                        <Button
+                          type="button"
+                          onClick={() => handleDownloadReport(msg.reportDownloadUrl!)}
+                          className="rounded-xl h-9 px-4 text-sm text-white"
+                          style={{
+                            background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.88), rgba(14, 116, 144, 0.88))',
+                            backdropFilter: 'blur(20px)',
+                            WebkitBackdropFilter: 'blur(20px)',
+                            border: '2px solid rgba(209, 250, 229, 0.65)',
+                            boxShadow: '0 4px 12px rgba(16, 185, 129, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.3)',
+                          }}
+                        >
+                          <FileDown className="w-4 h-4 mr-2" />
+                          下载报告 PDF
+                        </Button>
+                      </div>
+                    )}
                     <AssistantBubble
                       content={msg.content}
                       isLatest={idx === messages.length - 1}
