@@ -3,6 +3,8 @@ import tempfile
 import time
 import re
 import uuid
+from io import BytesIO
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -23,6 +25,7 @@ from src.llm.model_factory import get_chat_model
 from src.prompts.prompts import INTENT_CLASSIFY_PROMPT
 from src.runtime.progress import begin_run, complete_run, fail_run, get_run, next_event, subscribe, to_sse, unsubscribe
 from src.utils.pdf_parser import parse_pdf
+from src.utils.report_pdf import build_report_pdf_bytes
 from src.utils.db import init_db
 from src.utils.image_utils import image_bytes_to_base64
 
@@ -48,6 +51,13 @@ _MEDICAL_KEYWORDS = {
 }
 
 
+def _is_formal_medical_report(summary_struct: dict | None) -> bool:
+    if not isinstance(summary_struct, dict):
+        return False
+    title = str(summary_struct.get("report_title", "")).strip()
+    return title in {"Health Management & Follow-up Report", "健康管理与随访报告"}
+
+
 def _looks_medical(text: str) -> bool:
     normalized = (text or "").strip().lower()
     if not normalized:
@@ -62,18 +72,20 @@ def _route_stages(intent: str) -> list[StageItem]:
         return [
             StageItem(
                 key="quick_router",
-                label="意图识别",
+                label="Intent Triage",
                 status="running",
                 content="",
+                substeps=[],
+                current_substep="",
             )
         ]
     return [
-        StageItem(key="quick_router", label="意图识别", status="running", content=""),
-        StageItem(key="planner", label="管理计划生成", status="pending", content=""),
-        StageItem(key="tooler", label="病历/影像解析", status="pending", content=""),
-        StageItem(key="searcher", label="医学检索补充", status="pending", content=""),
-        StageItem(key="reflector", label="一致性校验", status="pending", content=""),
-        StageItem(key="summarize", label="患者摘要生成", status="pending", content=""),
+        StageItem(key="quick_router", label="Intent Triage", status="running", content="", substeps=[], current_substep=""),
+        StageItem(key="planner", label="Care Plan Drafting", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="tooler", label="Record/Image Analysis", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="searcher", label="Medical Evidence Retrieval", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="reflector", label="Consistency Review", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="summarize", label="Patient Summary", status="pending", content="", substeps=[], current_substep=""),
     ]
 
 
@@ -198,8 +210,8 @@ async def run_multi_agent(
         logger.info("[run_multi_agent] graph_invoke end")
     except Exception as exc:
         logger.exception("[run_multi_agent] graph failed")
-        await fail_run(run_id, f"后端处理失败: {exc}")
-        raise HTTPException(status_code=500, detail=f"后端处理失败: {exc}") from exc
+        await fail_run(run_id, f"Backend processing failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Backend processing failed: {exc}") from exc
 
     # Build stage outputs
     tool_output = result.get("merged_analysis", "")
@@ -209,38 +221,44 @@ async def run_multi_agent(
     summary_output = result.get("summary", "")
     tool_skipped = bool(result.get("tool_skipped"))
 
-    stages = [
-        StageItem(
-            key="planner",
-            label="管理计划生成",
-            status="done" if planner_output else "skipped",
-            content=planner_output,
-        ),
-        StageItem(
-            key="tooler",
-            label="病历/影像解析",
-            status="skipped" if tool_skipped else ("done" if tool_output else "skipped"),
-            content="" if tool_skipped else tool_output,
-        ),
-        StageItem(
-            key="searcher",
-            label="医学检索补充",
-            status="done" if search_output else "skipped",
-            content=search_output,
-        ),
-        StageItem(
-            key="reflector",
-            label="一致性校验",
-            status="done" if reflect_output else "skipped",
-            content=reflect_output,
-        ),
-        StageItem(
-            key="summarize",
-            label="患者摘要",
-            status="done" if summary_output else "skipped",
-            content=summary_output,
-        ),
-    ]
+    snapshot = await get_run(run_id)
+    stages: list[StageItem] = []
+    if snapshot and snapshot.get("stages"):
+        for stage in snapshot["stages"]:
+            stages.append(StageItem.model_validate(stage))
+    else:
+        stages = [
+            StageItem(
+                key="planner",
+                label="Care Plan Drafting",
+                status="done" if planner_output else "skipped",
+                content=planner_output,
+            ),
+            StageItem(
+                key="tooler",
+                label="Record/Image Analysis",
+                status="skipped" if tool_skipped else ("done" if tool_output else "skipped"),
+                content="" if tool_skipped else tool_output,
+            ),
+            StageItem(
+                key="searcher",
+                label="Medical Evidence Retrieval",
+                status="done" if search_output else "skipped",
+                content=search_output,
+            ),
+            StageItem(
+                key="reflector",
+                label="Consistency Review",
+                status="done" if reflect_output else "skipped",
+                content=reflect_output,
+            ),
+            StageItem(
+                key="summarize",
+                label="Patient Summary",
+                status="done" if summary_output else "skipped",
+                content=summary_output,
+            ),
+        ]
 
     response_payload = MultiAgentResponse(
         run_id=run_id,
@@ -250,10 +268,43 @@ async def run_multi_agent(
         search=search_output,
         reflect_verify=reflect_output,
         stages=stages,
+        summary_struct=result.get("summary_struct"),
+        report_download_url=(
+            f"/api/multi-agent/report/{run_id}.pdf"
+            if summary_output and _is_formal_medical_report(result.get("summary_struct"))
+            else None
+        ),
     )
     await complete_run(run_id, response_payload.model_dump())
     logger.info("[run_multi_agent] finished summary_len=%s", len(summary_output or ""))
     return response_payload
+
+
+@app.get("/api/multi-agent/report/{run_id}.pdf")
+async def download_report_pdf(run_id: str):
+    snapshot = await get_run(run_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Run record not found.")
+    if not snapshot.get("done"):
+        raise HTTPException(status_code=409, detail="The current run is not finished yet. Please try again later.")
+
+    response_payload = snapshot.get("response") or {}
+    summary_text = str(response_payload.get("summary", "")).strip()
+    if not summary_text:
+        raise HTTPException(status_code=404, detail="No exportable report content is available for this run.")
+
+    summary_struct = response_payload.get("summary_struct")
+    if not _is_formal_medical_report(summary_struct):
+        raise HTTPException(status_code=404, detail="No formal medical report was generated for this run.")
+
+    pdf_bytes = build_report_pdf_bytes(summary_struct=summary_struct, summary_text=summary_text, run_id=run_id)
+    filename = f"health_report_{run_id[:8] or 'report'}.pdf"
+    quoted = quote(filename)
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+        "Cache-Control": "no-cache",
+    }
+    return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
 @app.get("/api/multi-agent/events/{run_id}")
