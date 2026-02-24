@@ -136,36 +136,47 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 120000;
 const DEFAULT_LOADING_FLOW: LoadingStage[] = [{ key: "quick_router", label: "意图识别" }];
 
-const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[] => {
-  if (payload.stages && payload.stages.length > 0) return payload.stages;
+const STAGE_LABELS: Record<string, { zh: string; en: string }> = {
+  quick_router: { zh: "意图识别", en: "Intent recognition" },
+  tooler: { zh: "病历/影像解析", en: "Record/Image parsing" },
+  searcher: { zh: "医学检索补充", en: "Medical search" },
+  planner: { zh: "管理计划生成", en: "Plan generation" },
+  reflector: { zh: "一致性校验", en: "Consistency check" },
+  summarize: { zh: "患者摘要", en: "Patient summary" },
+};
+
+const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>, lang: 'zh' | 'en' = 'zh'): StageItem[] => {
+  if (payload.stages && payload.stages.length > 0) {
+    return payload.stages.map((s) => ({ ...s, label: STAGE_LABELS[s.key]?.[lang] || s.label || s.key }));
+  }
   return [
     {
       key: "tooler",
-      label: "病历/影像解析",
+      label: STAGE_LABELS.tooler[lang],
       status: payload.tool ? "done" : "skipped",
       content: payload.tool || "",
     },
     {
       key: "searcher",
-      label: "医学检索补充",
+      label: STAGE_LABELS.searcher[lang],
       status: payload.search ? "done" : "skipped",
       content: payload.search || "",
     },
     {
       key: "planner",
-      label: "管理计划生成",
+      label: STAGE_LABELS.planner[lang],
       status: payload.planner ? "done" : "skipped",
       content: payload.planner || "",
     },
     {
       key: "reflector",
-      label: "一致性校验",
+      label: STAGE_LABELS.reflector[lang],
       status: payload.reflect_verify ? "done" : "skipped",
       content: payload.reflect_verify || "",
     },
     {
       key: "summarize",
-      label: "患者摘要",
+      label: STAGE_LABELS.summarize[lang],
       status: payload.summary ? "done" : "skipped",
       content: payload.summary || "",
     },
@@ -183,6 +194,8 @@ const Chat = () => {
   const [sidebarPreview, setSidebarPreview] = useState(false);
   const [calendarPreview, setCalendarPreview] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCentered, setIsCentered] = useState(true);
+  const [lang, setLang] = useState<'zh' | 'en'>('zh');
   const [loadingFlow, setLoadingFlow] = useState<LoadingStage[]>([]);
   const [loadingStageIdx, setLoadingStageIdx] = useState(0);
   const [loadingVisibleCount, setLoadingVisibleCount] = useState(1);
@@ -206,7 +219,7 @@ const Chat = () => {
 
   const updateTimelineFromStages = (stages: StageItem[]) => {
     if (!stages || stages.length === 0) return;
-    const flow = stages.map((s) => ({ key: s.key, label: s.label }));
+    const flow = stages.map((s) => ({ key: s.key, label: STAGE_LABELS[s.key]?.[lang] || s.label || s.key }));
     setLoadingFlow(flow);
 
     let runningIdx = stages.findIndex((s) => s.status === "running");
@@ -241,7 +254,9 @@ const Chat = () => {
     }, 3000);
     return () => clearTimeout(t);
   }, []);
+  const toggleLang = () => setLang((s) => (s === 'zh' ? 'en' : 'zh'));
   const handleSend = async () => {
+    setIsCentered(false);
     const text = input.trim();
     if (!text && !previewImage) return;
     const outboundText = text || "请分析这张影像";
@@ -255,7 +270,7 @@ const Chat = () => {
     };
     setMessages((m) => [...m, userMsg]);
     setIsLoading(true);
-    setLoadingFlow(DEFAULT_LOADING_FLOW);
+    setLoadingFlow(DEFAULT_LOADING_FLOW.map((s) => ({ key: s.key, label: STAGE_LABELS[s.key]?.[lang] || s.label })));
     setLoadingStageIdx(0);
     setLoadingVisibleCount(1);
 
@@ -314,7 +329,7 @@ const Chat = () => {
         role: "assistant",
         content: payload.summary || "未返回总结内容",
         timestamp: new Date(),
-        stages: buildStagesFromLegacy(payload),
+        stages: buildStagesFromLegacy(payload, lang),
       };
       setMessages((m) => [...m, aiMsg]);
       setInput("");
@@ -364,22 +379,28 @@ const Chat = () => {
 
   const EMPTY_TASKS = [
     {
-      text: "请用通俗语言解释这份检查报告",
-      hasIcon: true,
+      text: lang === 'zh' ? "请用通俗的语言解释这份检查报告" : "Explain this report in plain language",
+      hasIcon: false,
       onClick: () => {
-        setInput("请用通俗语言解释这份检查报告");
+        setInput(lang === 'zh' ? "请用通俗的语言解释这份检查报告" : "Explain this report in plain language");
         fileRef.current?.click();
       },
     },
     {
-      text: "帮我梳理复诊前需要关注的三个重点",
+      text: lang === 'zh' ? "帮我看看当前用药的作用和注意事项" : "Explain my current medication",
       hasIcon: false,
-      onClick: () => handleQuickPrompt("帮我梳理复诊前需要关注的三个重点"),
+      onClick: () => {
+        setInput(lang === 'zh' ? "帮我看看当前用药的作用和注意事项" : "Explain my current medication");
+        fileRef.current?.click();
+      },
     },
     {
-      text: "根据目前情况给我一周的健康管理建议",
+      text: lang === 'zh' ? "根据这份报告给我一周的健康管理建议" : "Plan my week from this report",
       hasIcon: false,
-      onClick: () => handleQuickPrompt("根据目前情况给我一周的健康管理建议"),
+      onClick: () => {
+        setInput(lang === 'zh' ? "根据这份报告给我一周的健康管理建议" : "Plan my week from this report");
+        fileRef.current?.click();
+      },
     },
   ];
 
@@ -424,6 +445,28 @@ const Chat = () => {
               <span className="font-semibold text-lg" style={{ color: '#0e0b40ff'}}>Medora</span>
             </motion.div>
           </Link>
+          <div className="absolute right-4 top-0 h-16 flex items-center">
+            <button
+              type="button"
+              onClick={toggleLang}
+              className="absolute top-1/2 -translate-y-1/2"
+              style={{ left: 'calc(100% - 48px)' }}
+              aria-label="Toggle language"
+            >
+              <Button
+                className="w-10 h-10 p-0 rounded-full flex items-center justify-center transition-all hover:scale-105"
+                style={{
+                  background: 'rgba(14,11,64,0.8)',
+                  backdropFilter: 'blur(20px)',
+                  WebkitBackdropFilter: 'blur(20px)',
+                  border: '2px solid rgba(110, 106, 183, 0.4)',
+                  boxShadow: '0 4px 12px rgba(14,11,64,0.45), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(14,11,64,0.2)'
+                }}
+              >
+                <span className="text-white font-medium">{lang === 'zh' ? 'EN' : '中'}</span>
+              </Button>
+            </button>
+          </div>
         </header>
 
         {/* Main content with sidebar buttons */}
@@ -440,7 +483,7 @@ const Chat = () => {
                   });
                 }}
                 className="w-12 h-12 rounded-full flex items-center justify-center transition-all backdrop-blur-md bg-white/30 text-muted-foreground hover:text-foreground hover:bg-white/50 border border-white/20 shadow-sm"
-                title="咨询历史"
+                title={lang === 'zh' ? "咨询历史" : "History"}
                 style={{
                   boxShadow: '0 2px 8px rgba(255,255,255,0.3), inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(255,255,255,0.2)'
                 }}
@@ -454,7 +497,7 @@ const Chat = () => {
                     setSidebarOpen(false);
                   }}
                   className="w-12 h-12 rounded-full flex items-center justify-center transition-all backdrop-blur-md bg-white/30 text-muted-foreground hover:text-foreground hover:bg-white/50 border border-white/20 shadow-sm"
-                  title="健康日历"
+                  title={lang === 'zh' ? "健康日历" : "Health calendar"}
                   style={{
                     boxShadow: '0 2px 8px rgba(255,255,255,0.3), inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(255,255,255,0.2)'
                   }}
@@ -492,14 +535,14 @@ const Chat = () => {
                       className="flex items-center gap-2 text-foreground hover:opacity-80 transition-opacity"
                     >
                       <MessageSquare className="w-5 h-5" />
-                      <span className="font-medium text-sm">咨询历史</span>
+                      <span className="font-medium text-sm">{lang === 'zh' ? '咨询历史' : 'History'}</span>
                     </button>
                   </div>
                   {/* Content: preview 时不渲染 */}
                   {!sidebarPreview && (
                     <div className="flex-1 overflow-y-auto p-2 space-y-1">
                       <Button variant="ghost" className="w-full justify-start gap-3 mb-2 rounded-xl text-sm h-10 hover:bg-white/50 text-foreground hover:text-foreground">
-                        <Plus className="w-5 h-5" /> 新会话
+                        <Plus className="w-5 h-5" /> {lang === 'zh' ? '新会话' : 'New session'}
                       </Button>
                       {sessions.map((s) => (
                         <button
@@ -546,7 +589,7 @@ const Chat = () => {
                       className="flex items-center gap-2 text-foreground hover:opacity-80 transition-opacity"
                     >
                       <Calendar className="w-5 h-5" />
-                      <span className="font-medium text-sm">健康日历</span>
+                      <span className="font-medium text-sm">{lang === 'zh' ? '健康日历' : 'Health calendar'}</span>
                     </button>
                   </div>
                   {/* Content: preview 时不渲染 */}
@@ -583,7 +626,7 @@ const Chat = () => {
                               )}
                           </div>
 
-                          <span className="text-sm">年</span>
+                          <span className="text-sm">{lang === 'zh' ? '年' : 'Year'}</span>
 
                           <div className="relative">
                             <button
@@ -613,7 +656,7 @@ const Chat = () => {
                                 </div>
                               )}
                           </div>
-                          <span className="text-sm">月</span>
+                          <span className="text-sm">{lang === 'zh' ? '月' : 'Month'}</span>
                         </div>
                       </div>
 
@@ -644,18 +687,18 @@ const Chat = () => {
 
                       {/* Legend */}
                       <div className="mt-4 border-t border-white/20">
-                        <div className="flex items-center justify-start w-full gap-4 pl-3 text-xs text-muted-foreground">
+                        <div className="flex items-center justify-start w-full gap-2 pl-3 text-xs text-muted-foreground">
                           <div className="flex items-center gap-1">
                             <span className="w-2 h-2 rounded-full bg-blue-500" />
-                            <span>用药</span>
+                            <span>{lang === 'zh' ? '用药' : 'Medication'}</span>
                           </div>
                           <div className="flex items-center gap-1">
                             <span className="w-2 h-2 rounded-full bg-red-500" />
-                            <span>就诊</span>
+                            <span>{lang === 'zh' ? '就诊' : 'Appointment'}</span>
                           </div>
                           <div className="flex items-center gap-1">
                             <span className="w-2 h-2 rounded-full bg-amber-500" />
-                            <span>复查</span>
+                            <span>{lang === 'zh' ? '复查' : 'Recheck'}</span>
                           </div>
                         </div>
                       </div>
@@ -669,8 +712,11 @@ const Chat = () => {
       {/* Main chat area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
-          <div className="max-w-4xl mx-auto flex flex-col min-h-full">
+        <div ref={scrollRef} className={`flex-1 overflow-y-auto px-4 py-6 ${isCentered ? 'flex' : ''}`}>
+          <div
+            className={isCentered ? 'max-w-4xl mx-auto flex-1 flex flex-col justify-center' : 'max-w-4xl mx-auto flex flex-col min-h-full'}
+            style={isCentered ? { transform: 'translateY(-6vh)' } : undefined}
+          >
           {messages.map((msg, idx) => {
             const isSingleLine =
               typeof msg.content === "string" && !msg.content.includes("\n") && msg.content.length <= 60;
@@ -723,7 +769,7 @@ const Chat = () => {
                     {msg.stages && msg.stages.length > 0 && (
                       <details className="pl-1">
                         <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
-                          查看阶段详情
+                          {lang === 'zh' ? '查看阶段详情' : 'View stages details'}
                         </summary>
                         <div className="space-y-2 mt-2">
                           {msg.stages.map((stage) => {
@@ -756,30 +802,122 @@ const Chat = () => {
 
           {messages.length === 0 && (
             <motion.div
-              className="flex justify-center mt-auto"
+              className={isCentered ? "flex justify-center items-center mt-0 h-full" : "flex justify-center mt-auto"}
               initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
             >
-              <div className="p-6 rounded-3xl max-w-4xl mx-auto">
-                <div className="mt-4 text-3xl font-extrabold text-foreground/90 leading-relaxed"  style={{ color: '#0e0b40ff'}}>
-                  今天需要 Medora 做点什么？
-                </div>
-                <div className="mt-2 text-muted-foreground leading-relaxed">
-                  我可以帮您解读病历、分析影像，并生成随访建议；也可以结合您的历史情况提供个性化的健康评估与管理方案。
-                </div>
-                <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  {EMPTY_TASKS.map((task) => (
-                    <button
-                      key={task.text}
-                      type="button"
-                      className="text-left p-4 rounded-2xl border border-border/60 bg-white/60 hover:bg-white/80 transition-colors flex items-center gap-2"
-                      onClick={task.onClick}
-                    >
-                      {task.hasIcon && <Paperclip className="w-4 h-4 text-muted-foreground" />}
-                      <span className="text-sm">{task.text}</span>
-                    </button>
-                  ))}
+              <div className="p-6 rounded-3xl max-w-4xl mx-auto w-full">
+                <div className="flex flex-col items-center">
+                  <div className="mt-4 text-3xl font-extrabold text-foreground/90 leading-relaxed" style={{ color: '#0e0b40ff'}}>
+                    {lang === 'zh' ? '今天需要 Medora 做点什么？' : 'What would you like Medora to help with today?'}
+                  </div>
+                  {/* <div className="mt-2 text-muted-foreground leading-relaxed text-center max-w-2xl">
+                    我可以帮您解读病历、分析影像，并生成随访建议；也可以结合您的历史情况提供个性化的健康评估与管理方案。
+                  </div> */}
+                  <div className="mt-5 grid gap-3 sm:grid-cols-3 w-full">
+                    {EMPTY_TASKS.map((task) => (
+                      <button
+                        key={task.text}
+                        type="button"
+                        className="p-4 rounded-2xl border border-border/60 bg-white/60 hover:bg-white/80 transition-colors flex items-center justify-center text-center"
+                        onClick={task.onClick}
+                      >
+                        <span className="text-sm">{task.text}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {isCentered && (
+                    <div className="mt-6 w-full px-4">
+                      <div className="flex items-end gap-2 max-w-4xl mx-auto">
+                        <div className="flex justify-center h-[46px]">
+                          <Button
+                            size="icon"
+                            className="rounded-full shrink-0 border-0 transition-all hover:shadow-md w-9 h-9"
+                            style={{
+                              background: 'rgba(255, 255, 255, 0.8)',
+                              backdropFilter: 'blur(20px)',
+                              border: '2px solid rgba(255, 255, 255, 0.9)',
+                              boxShadow: '0 4px 16px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)'
+                            }}
+                            onClick={() => fileRef.current?.click()}
+                          >
+                            <Paperclip className="w-4 h-4" style={{ color: 'rgb(99, 102, 241)' }} />
+                          </Button>
+                        </div>
+                        <div 
+                          className="flex-1 p-2 rounded-[36px] min-w-0"
+                          style={{
+                            background: 'rgba(255, 255, 255, 0.35)',
+                            backdropFilter: 'blur(20px)',
+                            border: '2px solid rgba(255, 255, 255, 0.4)',
+                            boxShadow: '0 8px 32px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)'
+                          }}
+                        >
+                          <input type="file" ref={fileRef} className="hidden" accept="image/*" onChange={handleFile} />
+                          <Textarea
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder={lang === 'zh' ? "输入您的问题，或上传病历/影像..." : "Type your question, or upload records/images..."}
+                            className="w-full min-h-[36px] max-h-24 resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-foreground placeholder:text-muted-foreground py-2"
+                            style={{fieldSizing: 'content' as any }}
+                          />
+                        </div>
+                        <div className="flex justify-center h-[46px]">
+                          <Button
+                            size="icon"
+                            className="rounded-full shrink-0 border-0 transition-all hover:shadow-md w-9 h-9"
+                            style={{
+                              background: 'rgba(99, 102, 241, 0.8)',
+                              backdropFilter: 'blur(20px)',
+                              border: '2px solid rgba(165,180,252, 0.8)',
+                              boxShadow: '0 4px 16px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -1px 0 rgba(99, 102, 241, 0.2)'
+                            }}
+                            onClick={handleSend}
+                            disabled={isLoading || (!input.trim() && !previewImage)}
+                          >
+                            <Send className="w-4 h-4 text-primary-foreground" />
+                          </Button>
+                        </div>
+                      </div>
+                      {/* preview for centered state: below input and left-aligned */}
+                      {previewImage && (
+                        <AnimatePresence>
+                          <motion.div
+                            className="max-w-4xl mx-auto px-4 w-full mt-3"
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                          >
+                            <div
+                              className="p-2 pb-0 relative inline-flex items-center gap-2 rounded-xl group"
+                              style={{
+                                backdropFilter: 'blur(20px)',
+                                WebkitBackdropFilter: 'blur(20px)',
+                                justifyContent: 'flex-start'
+                              }}
+                            >
+                              <img src={previewImage} alt="预览" className="h-20 object-cover rounded-sm" />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="rounded-lg h-8 w-8 absolute right-3 top-3 opacity-0 group-hover:opacity-100 transition-opacity bg-white/50 hover:bg-white transition-colors"
+                                onClick={() => {
+                                  setPreviewImage(null);
+                                  setSelectedImageFile(null);
+                                  if (fileRef.current) fileRef.current.value = "";
+                                }}
+                              >
+                                <X className="w-4 h-4 text-black" />
+                              </Button>
+                            </div>
+                          </motion.div>
+                        </AnimatePresence>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </motion.div>
@@ -805,7 +943,7 @@ const Chat = () => {
                     ))}
                   </div>
                   <span className="text-sm text-muted-foreground">
-                    正在执行：{loadingFlow[loadingStageIdx]?.label || "等待后端阶段回传"}
+                    {lang === 'zh' ? '正在执行：' : 'Running:'} {loadingFlow[loadingStageIdx]?.label || (lang === 'zh' ? '等待后端阶段回传' : 'waiting for backend stages')}
                   </span>
                 </div>
                 <div className="mt-4 space-y-2">
@@ -858,7 +996,7 @@ const Chat = () => {
 
         {/* Image preview (aligned with input, delete button shows on hover) */}
         <AnimatePresence>
-          {previewImage && (
+          {previewImage && !isCentered && (
             <motion.div
               className="max-w-4xl mx-auto px-4 w-full "
               initial={{ height: 0, opacity: 0 }}
@@ -891,7 +1029,8 @@ const Chat = () => {
         </AnimatePresence>
 
         {/* Input */}
-        <div className="p-4 shrink-0">
+        {!isCentered && (
+          <div className="p-4 shrink-0">
           <div className="flex items-end gap-2 max-w-4xl mx-auto">
             <div className="flex justify-center h-[46px]">
               <Button
@@ -922,7 +1061,7 @@ const Chat = () => {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="输入您的问题，或上传病历/影像..."
+                placeholder={lang === 'zh' ? "输入您的问题，或上传病历/影像..." : "Type your question, or upload records/images..."}
                 className="w-full min-h-[36px] max-h-24 resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-foreground placeholder:text-muted-foreground py-2"
                 style={{fieldSizing: 'content' as any }}
               />
@@ -945,9 +1084,15 @@ const Chat = () => {
             </div>
           </div>
           <p className="text-xs text-muted-foreground text-center mt-2">
-            仅供参考，不构成医疗诊断建议
+            {lang === 'zh' ? '仅供参考，不构成医疗诊断建议' : 'For reference only — not medical advice.'}
           </p>
         </div>
+        )}
+        {isCentered && (
+          <p className="text-xs text-muted-foreground text-center" style={{position: 'fixed', left: 0, right: 0, bottom: 12}}>
+            {lang === 'zh' ? '仅供参考，不构成医疗诊断建议' : 'For reference only — not medical advice.'}
+          </p>
+        )}
       </div>
     </div>
     {/* Close flex-col main layout */}
