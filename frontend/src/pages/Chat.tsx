@@ -58,6 +58,15 @@ type StageItem = {
   label: string;
   status: string;
   content: string;
+  substeps?: SubStepItem[];
+  current_substep?: string;
+};
+
+type SubStepItem = {
+  id: string;
+  label: string;
+  status: string;
+  detail?: string;
 };
 
 type MultiAgentResponse = {
@@ -73,7 +82,14 @@ type MultiAgentResponse = {
 type UiMessage = ChatMessage & {
   stages?: StageItem[];
 };
-type LoadingStage = { key: string; label: string; status?: string; content?: string };
+type LoadingStage = {
+  key: string;
+  label: string;
+  status?: string;
+  content?: string;
+  substeps?: SubStepItem[];
+  current_substep?: string;
+};
 
 // 日历事件类型
 type CalendarEvent = {
@@ -146,30 +162,40 @@ const buildStagesFromLegacy = (payload: Partial<MultiAgentResponse>): StageItem[
       label: "病历/影像解析",
       status: payload.tool ? "done" : "skipped",
       content: payload.tool || "",
+      substeps: [],
+      current_substep: "",
     },
     {
       key: "searcher",
       label: "医学检索补充",
       status: payload.search ? "done" : "skipped",
       content: payload.search || "",
+      substeps: [],
+      current_substep: "",
     },
     {
       key: "planner",
       label: "管理计划生成",
       status: payload.planner ? "done" : "skipped",
       content: payload.planner || "",
+      substeps: [],
+      current_substep: "",
     },
     {
       key: "reflector",
       label: "一致性校验",
       status: payload.reflect_verify ? "done" : "skipped",
       content: payload.reflect_verify || "",
+      substeps: [],
+      current_substep: "",
     },
     {
       key: "summarize",
       label: "患者摘要",
       status: payload.summary ? "done" : "skipped",
       content: payload.summary || "",
+      substeps: [],
+      current_substep: "",
     },
   ];
 };
@@ -214,6 +240,8 @@ const Chat = () => {
       label: s.label,
       status: s.status,
       content: s.content,
+      substeps: s.substeps || [],
+      current_substep: s.current_substep || "",
     }));
     setLoadingFlow(flow);
 
@@ -761,6 +789,29 @@ const Chat = () => {
                               >
                                 <p className="text-xs font-semibold" style={{ color: '#0e0b40ff' }}>{stage.label}</p>
                                 <p className="text-xs mt-1 max-h-24 overflow-auto" style={{ color: '#0e0b40ff' }}>{stage.content || "无阶段输出"}</p>
+                                {stage.substeps && stage.substeps.length > 0 && (
+                                  <div className="mt-2 space-y-1">
+                                    {stage.substeps.map((sub) => {
+                                      const isCurrent = stage.current_substep === sub.id && sub.status === "running";
+                                      const dotClass = sub.status === "done"
+                                        ? "bg-emerald-500"
+                                        : sub.status === "error"
+                                          ? "bg-red-500"
+                                          : isCurrent
+                                            ? "bg-primary"
+                                            : "bg-muted-foreground/50";
+                                      return (
+                                        <div key={`${msg.id}-${stage.key}-${sub.id}`} className="flex items-start gap-2">
+                                          <span className={`mt-1 h-1.5 w-1.5 rounded-full ${dotClass}`} />
+                                          <div className="text-[11px] leading-4" style={{ color: '#0e0b40ff' }}>
+                                            <div className={isCurrent ? "font-semibold" : ""}>{sub.label}</div>
+                                            {sub.detail && <div className="opacity-80">{sub.detail}</div>}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -834,6 +885,8 @@ const Chat = () => {
                     const stageText = (stage.content || "").trim();
                     const displayContent = stageText
                       || (isCurrent ? "思考中" : (stage.status === "skipped" ? "已跳过该阶段" : ""));
+                    const substeps = stage.substeps || [];
+                    const recentSubsteps = substeps.slice(Math.max(0, substeps.length - 4));
                     return (
                       <div key={stage.key} className="flex items-start gap-3">
                         <div className="relative flex flex-col items-center">
@@ -874,6 +927,29 @@ const Chat = () => {
                             <p className="text-xs mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words" style={{ color: '#0e0b40ff' }}>
                               {displayContent}
                             </p>
+                          )}
+                          {recentSubsteps.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {recentSubsteps.map((sub) => {
+                                const isSubCurrent = stage.current_substep === sub.id && sub.status === "running";
+                                const dotClass = sub.status === "done"
+                                  ? "bg-emerald-500"
+                                  : sub.status === "error"
+                                    ? "bg-red-500"
+                                    : isSubCurrent
+                                      ? "bg-primary"
+                                      : "bg-muted-foreground/50";
+                                return (
+                                  <div key={`${stage.key}-${sub.id}`} className="flex items-start gap-2">
+                                    <span className={`mt-1 h-1.5 w-1.5 rounded-full ${dotClass}`} />
+                                    <div className="text-[11px] leading-4" style={{ color: '#0e0b40ff' }}>
+                                      <div className={isSubCurrent ? "font-semibold" : ""}>{sub.label}</div>
+                                      {sub.detail && <div className="opacity-80">{sub.detail}</div>}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           )}
                         </div>
                       </div>

@@ -1,4 +1,13 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class SubStepItem(BaseModel):
+    id: str
+    label: str
+    status: str
+    detail: str = ""
+    started_at: float | None = None
+    ended_at: float | None = None
 
 
 class StageItem(BaseModel):
@@ -6,6 +15,8 @@ class StageItem(BaseModel):
     label: str
     status: str
     content: str
+    substeps: list[SubStepItem] = Field(default_factory=list)
+    current_substep: str = ""
 
 
 class MultiAgentResponse(BaseModel):

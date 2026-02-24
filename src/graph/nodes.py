@@ -29,7 +29,7 @@ from src.prompts.prompts import (
     SEARCH_SUMMARY_PROMPT,
     SUMMARIZE_PROMPT,
 )
-from src.runtime.progress import mark_stage
+from src.runtime.progress import mark_stage, mark_substep
 from src.tool import tools, tools_by_name
 from src.utils.tool_calling import latest_ai_message, parse_tool_payload, tool_text_or_error
 
@@ -185,6 +185,24 @@ def _build_plan_payload(
     )
 
 
+async def _mark_user_substep(
+    run_id: str,
+    stage_key: str,
+    substep_id: str,
+    label: str,
+    status: str,
+    detail: str = "",
+) -> None:
+    await mark_substep(
+        run_id=run_id,
+        stage_key=stage_key,
+        substep_id=substep_id,
+        status=status,
+        label=label,
+        detail=detail,
+    )
+
+
 # ── Supervisor ──────────────────────────────────────────────────────
 async def supervisor_node(
     state: MedAgentState,
@@ -206,24 +224,29 @@ async def supervisor_node(
 
     if intent == "NON_MEDICAL":
         logger.info("[supervisor] route=summarize (cached non-medical)")
-        await mark_stage(run_id, "quick_router", "done", content="意图识别结果：非医疗咨询，直接进入总结回复。")
+        await mark_stage(run_id, "quick_router", "running", content="正在理解你的问题。")
+        await _mark_user_substep(run_id, "quick_router", "understand_query", "理解你的问题", "done", "已完成问题理解。")
+        await _mark_user_substep(run_id, "quick_router", "decide_route", "判断是否进入医疗分析", "done", "这次将直接给你通用回复。")
+        await _mark_user_substep(run_id, "quick_router", "route_ready", "已确定处理路径", "done", "已确定当前处理方式。")
+        await mark_stage(run_id, "quick_router", "done", content="已判断为通用咨询，准备直接回复。")
         return Command(
             update={"query_intent": intent, "messages": messages},
             goto="summarize",
         )
 
     if not intent:
-        await mark_stage(run_id, "quick_router", "running", content="正在识别用户意图并选择执行路径。")
+        await mark_stage(run_id, "quick_router", "running", content="正在理解你的问题并选择处理方式。")
+        await _mark_user_substep(run_id, "quick_router", "understand_query", "理解你的问题", "running", "正在理解你提供的内容。")
         raw_text = state.get("raw_text", "").strip()
         normalized = raw_text.lower()
 
         if has_images and state.get("images"):
             intent = "MEDICAL"
-            route_note = "检测到影像输入，判定为医疗咨询。"
+            route_note = "已识别到医疗资料，将进入医疗分析。"
             logger.info("[supervisor] intent=MEDICAL (has_images=True)")
         elif not raw_text:
             intent = "NON_MEDICAL"
-            route_note = "输入为空，按非医疗咨询处理。"
+            route_note = "未检测到医疗内容，将按通用咨询处理。"
             logger.info("[supervisor] intent=NON_MEDICAL (empty text)")
         else:
             llm = get_chat_model("SUPERVISOR", default_model=_SUPERVISOR_MODEL, temperature=0.1)
@@ -241,39 +264,45 @@ async def supervisor_node(
 
             intent = response.INTENT
             logger.info("[supervisor] intent=%s (llm classified)", intent)
-            route_note = f"意图识别结果：{intent}（LLM判定）。"
+            route_note = "已完成问题类型判断。"
             if intent not in {"MEDICAL", "NON_MEDICAL"}:
                 if _GREETING_PATTERN.match(normalized):
                     intent = "NON_MEDICAL"
-                    route_note = "检测到问候语，按非医疗咨询处理。"
+                    route_note = "已识别为通用咨询。"
                     logger.info("[supervisor] intent=NON_MEDICAL (keyword_fallback)")
                 elif any(kw in normalized for kw in _MEDICAL_KEYWORDS):
                     intent = "MEDICAL"
-                    route_note = "命中医疗关键词，判定为医疗咨询。"
+                    route_note = "已识别为医疗相关问题。"
                     logger.info("[supervisor] intent=MEDICAL (keyword_fallback)")
                 else:
                     intent = "NON_MEDICAL"
-                    route_note = "未命中医疗语义，按非医疗咨询处理。"
+                    route_note = "已识别为通用咨询。"
                     logger.info("[supervisor] intent=NON_MEDICAL (keyword_fallback)")
 
+        await _mark_user_substep(run_id, "quick_router", "understand_query", "理解你的问题", "done", "已完成问题理解。")
+        await _mark_user_substep(run_id, "quick_router", "decide_route", "判断是否进入医疗分析", "running", "正在判断最合适的处理路径。")
         if intent == "NON_MEDICAL":
             logger.info("[supervisor] route=summarize (entry non-medical)")
+            await _mark_user_substep(run_id, "quick_router", "decide_route", "判断是否进入医疗分析", "done", "这次无需进入医疗分析。")
+            await _mark_user_substep(run_id, "quick_router", "route_ready", "已确定处理路径", "done", "将直接生成通用回复。")
             await mark_stage(
                 run_id,
                 "quick_router",
                 "done",
-                content=route_note or "意图识别结果：非医疗咨询，直接进入总结回复。",
+                content=route_note or "已确定为通用咨询，准备直接回复。",
             )
             return Command(
                 update={"query_intent": intent, "messages": messages},
                 goto="summarize",
             )
 
+        await _mark_user_substep(run_id, "quick_router", "decide_route", "判断是否进入医疗分析", "done", "将进入医疗分析流程。")
+        await _mark_user_substep(run_id, "quick_router", "route_ready", "已确定处理路径", "done", "将继续完成医疗分析与建议。")
         await mark_stage(
             run_id,
             "quick_router",
             "done",
-            content=route_note or "意图识别结果：医疗咨询，进入完整诊疗分析流程。",
+            content=route_note or "已确定进入医疗分析流程。",
         )
         return Command(
             update={
@@ -308,7 +337,8 @@ async def planner_node(
     """Planner-centric orchestrator with phase-driven routing."""
     logger.info("[planner] enter")
     run_id = state["run_id"]
-    await mark_stage(run_id, "planner", "running", content="正在生成与评估健康管理计划。")
+    await mark_stage(run_id, "planner", "running", content="正在整理健康重点并生成管理建议。")
+    await _mark_user_substep(run_id, "planner", "focus_extract", "提取当前健康重点", "running", "正在提炼本次资料中的重点信息。")
 
     llm = get_chat_model("PLANNER", default_model=_PLANNER_MODEL, temperature=0.3)
 
@@ -322,11 +352,15 @@ async def planner_node(
 
     if decision == "SUMMARY":
         logger.info("[planner] route=summarize (reflector approved)")
+        await _mark_user_substep(run_id, "planner", "focus_extract", "提取当前健康重点", "done", "已完成本轮重点提取。")
+        await _mark_user_substep(run_id, "planner", "plan_finalize", "完善最终建议", "done", "管理建议已确认，可进入摘要输出。")
         await mark_stage(run_id, "planner", "done", content=plan_text)
         return Command(update={"planner_decision": "SUMMARY"}, goto="summarize")
 
     if decision == "REDO":
         logger.info("[planner] decision=REDO, re-planning before tool dispatch")
+        await _mark_user_substep(run_id, "planner", "focus_extract", "提取当前健康重点", "done", "已结合上一轮结果更新重点。")
+        await _mark_user_substep(run_id, "planner", "plan_draft", "生成初步管理建议", "running", "正在根据已有信息更新建议。")
         analysis_context = state.get("merged_analysis", "") or state.get("raw_text", "")
         search_context = state.get("search_results", "") or "（未检索到外部证据）"
 
@@ -349,6 +383,7 @@ async def planner_node(
         plan_text = _render_care_plan_text(plan_model)
         plan_struct = plan_model.model_dump()
         tools_dispatched = False
+        await _mark_user_substep(run_id, "planner", "plan_draft", "生成初步管理建议", "done", "已生成更新后的建议草案。")
         pre_updates.update(
             {
                 "plan": plan_text,
@@ -362,6 +397,8 @@ async def planner_node(
 
     if not plan_text:
         logger.info("[planner] generating initial plan via llm model=%s", _PLANNER_MODEL)
+        await _mark_user_substep(run_id, "planner", "focus_extract", "提取当前健康重点", "done", "已提取本次健康重点。")
+        await _mark_user_substep(run_id, "planner", "plan_draft", "生成初步管理建议", "running", "正在生成第一版管理建议。")
         plan_model, raw_ai = await _invoke_structured(
             llm,
             CarePlan,
@@ -374,6 +411,7 @@ async def planner_node(
         plan_text = _render_care_plan_text(plan_model)
         plan_struct = plan_model.model_dump()
         tools_dispatched = False
+        await _mark_user_substep(run_id, "planner", "plan_draft", "生成初步管理建议", "done", "初步管理建议已生成。")
         pre_updates.update(
             {
                 "plan": plan_text,
@@ -387,6 +425,7 @@ async def planner_node(
 
     if not tools_dispatched:
         llm_with_tools = llm.bind_tools(tools)
+        await _mark_user_substep(run_id, "planner", "plan_finalize", "完善最终建议", "running", "正在判断是否需要补充资料后再完善建议。")
 
         logger.info("[planner] requesting tool calls via llm")
         planner_human = (
@@ -410,6 +449,7 @@ async def planner_node(
             last_ai = ai_response
 
             if ai_response.tool_calls:
+                await _mark_user_substep(run_id, "planner", "plan_finalize", "完善最终建议", "done", "已准备继续补充资料并完善建议。")
                 await mark_stage(run_id, "planner", "done", content=plan_text)
                 return Command(
                     update={
@@ -429,6 +469,7 @@ async def planner_node(
         )
         fallback_search = state.get("search_results", "") or _NO_TOOL_SEARCH_FALLBACK
         fallback_merged = state.get("merged_analysis", "") or state.get("raw_text", "")
+        await _mark_user_substep(run_id, "planner", "plan_finalize", "完善最终建议", "done", "已在现有信息基础上完成建议整理。")
         await mark_stage(run_id, "planner", "done", content=plan_text)
         return Command(
             update={
@@ -444,6 +485,8 @@ async def planner_node(
             goto="reflector",
         )
 
+    await _mark_user_substep(run_id, "planner", "focus_extract", "提取当前健康重点", "done", "已完成本轮重点提取。")
+    await _mark_user_substep(run_id, "planner", "plan_finalize", "完善最终建议", "done", "建议已完善，进入下一步校验。")
     await mark_stage(run_id, "planner", "done", content=plan_text)
     logger.info("[planner] route=reflector (tools already dispatched)")
     return Command(
@@ -462,17 +505,24 @@ async def planner_node(
 async def tooler_node(state: MedAgentState) -> dict:
     """Execute planner tool calls and map JSON outputs into graph fields."""
     logger.info("[tooler] enter has_images=%s", bool(state.get("has_images")))
-    await mark_stage(state["run_id"], "tooler", "running", content="正在解析病历文本与医学影像。")
+    run_id = state["run_id"]
+    await mark_stage(run_id, "tooler", "running", content="正在读取你提供的资料并提炼重点。")
+    await _mark_user_substep(run_id, "tooler", "read_materials", "读取你提供的资料", "running", "正在读取病历文本与影像资料。")
 
     ai_message = latest_ai_message(state)
     if ai_message is None or not ai_message.tool_calls:
         logger.info("[tooler] no pending tool calls, noop")
-        await mark_stage(state["run_id"], "tooler", "done", content="未检测到可执行工具调用，跳过病历/影像解析。")
+        await _mark_user_substep(run_id, "tooler", "read_materials", "读取你提供的资料", "done", "已完成资料读取。")
+        await _mark_user_substep(run_id, "tooler", "extract_key_info", "提炼关键医学信息", "skipped", "本轮未检测到可解析资料。")
+        await _mark_user_substep(run_id, "tooler", "build_conclusion", "形成分析结论", "skipped", "本轮跳过分析结论生成。")
+        await mark_stage(run_id, "tooler", "done", content="本轮未发现可继续解析的资料。")
         return {}
 
     tool_calls = list(ai_message.tool_calls)
     logger.info("[tooler] executing %s tool calls", len(tool_calls))
     semaphore = asyncio.Semaphore(max(1, _TOOLER_MAX_CONCURRENCY))
+    await _mark_user_substep(run_id, "tooler", "read_materials", "读取你提供的资料", "done", "资料读取完成，开始提炼关键信息。")
+    await _mark_user_substep(run_id, "tooler", "extract_key_info", "提炼关键医学信息", "running", "正在提炼关键医学信息。")
 
     async def _run_tool_call(idx: int, tool_call: dict[str, Any]) -> tuple[int, ToolMessage, dict[str, Any]]:
         tool_name = str(tool_call.get("name", ""))
@@ -506,12 +556,29 @@ async def tooler_node(state: MedAgentState) -> dict:
                 "meta": {"version": "1.0"},
             }
             content = json.dumps(payload, ensure_ascii=False)
+            await _mark_user_substep(
+                run_id,
+                "tooler",
+                f"extract_{idx}",
+                "提炼关键医学信息",
+                "error",
+                "部分资料暂时无法识别，已跳过并继续处理其余内容。",
+            )
             return idx, ToolMessage(content=content, tool_call_id=tool_call_id, name=tool_name), payload
 
         async with semaphore:
             observation = await tool_impl.ainvoke(args)
         payload = parse_tool_payload(tool_name, observation)
         content = json.dumps(payload, ensure_ascii=False)
+        ok = bool(payload.get("ok", False))
+        await _mark_user_substep(
+            run_id,
+            "tooler",
+            f"extract_{idx}",
+            "提炼关键医学信息",
+            "done" if ok else "error",
+            "资料提炼完成。" if ok else "部分资料提炼失败，已继续后续流程。",
+        )
         return idx, ToolMessage(content=content, tool_call_id=tool_call_id, name=tool_name), payload
 
     executed = await asyncio.gather(*[_run_tool_call(i, tc) for i, tc in enumerate(tool_calls)])
@@ -563,6 +630,10 @@ async def tooler_node(state: MedAgentState) -> dict:
 
     combined_search = f"## 网络搜索结果\n{web_summary}\n\n## 知识库搜索结果\n{rag_summary}"
 
+    await _mark_user_substep(run_id, "tooler", "extract_key_info", "提炼关键医学信息", "done", "已完成资料要点提炼。")
+    await _mark_user_substep(run_id, "searcher", "search_collect", "检索相关医学信息", "running", "正在补充与你问题相关的医学信息。")
+    await mark_stage(run_id, "searcher", "running", content="正在补充相关医学信息并整理说明。")
+
     searcher_llm = get_chat_model("SEARCHER", default_model=_SEARCHER_MODEL, temperature=0.2)
     search_struct_model, search_raw_ai = await _invoke_structured(
         searcher_llm,
@@ -578,8 +649,13 @@ async def tooler_node(state: MedAgentState) -> dict:
         ],
     )
     search_results = _render_search_summary_text(search_struct_model)
+    await _mark_user_substep(run_id, "searcher", "search_collect", "检索相关医学信息", "done", "已获取相关医学信息。")
+    await _mark_user_substep(run_id, "searcher", "search_filter", "筛选可信内容", "running", "正在筛选更有参考价值的内容。")
+    await _mark_user_substep(run_id, "searcher", "search_filter", "筛选可信内容", "done", "已完成内容筛选。")
+    await _mark_user_substep(run_id, "searcher", "search_summary", "整理补充说明", "running", "正在整理可读的补充说明。")
 
     llm_messages: list[AIMessage] = [search_raw_ai]
+    await _mark_user_substep(run_id, "tooler", "build_conclusion", "形成分析结论", "running", "正在整合资料形成分析结论。")
     if image_analyses:
         image_analysis = "\n---\n".join(image_analyses)
         merge_llm = get_chat_model("TOOLER_MERGE", default_model=_TOOLER_MERGE_MODEL, temperature=0.2)
@@ -612,6 +688,8 @@ async def tooler_node(state: MedAgentState) -> dict:
             merged_model = MergedMedicalAnalysis(primary_findings=[text_analysis] if text_analysis else [])
         merged = _render_merged_analysis_text(merged_model)
         merged_struct = merged_model.model_dump()
+    await _mark_user_substep(run_id, "tooler", "build_conclusion", "形成分析结论", "done", "分析结论已形成。")
+    await _mark_user_substep(run_id, "searcher", "search_summary", "整理补充说明", "done", "补充说明已整理完成。")
 
     log_stage(logger, "tooler.text", text_analysis)
     if image_analysis:
@@ -619,8 +697,8 @@ async def tooler_node(state: MedAgentState) -> dict:
     log_stage(logger, "tooler.merge", merged)
     log_stage(logger, "searcher", search_results)
     logger.info("[tooler] exit")
-    await mark_stage(state["run_id"], "tooler", "done", content=merged)
-    await mark_stage(state["run_id"], "searcher", "done", content=search_results)
+    await mark_stage(run_id, "tooler", "done", content=merged)
+    await mark_stage(run_id, "searcher", "done", content=search_results)
 
     return {
         "messages": [*tool_messages, *llm_messages],
@@ -639,7 +717,9 @@ async def tooler_node(state: MedAgentState) -> dict:
 async def reflector_node(state: MedAgentState) -> dict:
     """Review analysis + search + plan for consistency and accuracy."""
     logger.info("[reflector] enter")
-    await mark_stage(state["run_id"], "reflector", "running", content="正在校验分析结论与管理建议的一致性。")
+    run_id = state["run_id"]
+    await mark_stage(run_id, "reflector", "running", content="正在进行质量复核。")
+    await _mark_user_substep(run_id, "reflector", "check_consistency", "检查结论是否一致", "running", "正在检查分析结论与建议是否一致。")
     llm = get_chat_model("REFLECTOR", default_model=_REFLECTOR_MODEL, temperature=0.2)
 
     report, raw_ai = await _invoke_structured(
@@ -663,10 +743,21 @@ async def reflector_node(state: MedAgentState) -> dict:
     planner_decision = "REDO" if (is_fail and not hit_limit) else "SUMMARY"
 
     reflection_text = _render_reflection_text(report)
+    await _mark_user_substep(run_id, "reflector", "check_consistency", "检查结论是否一致", "done", "一致性检查完成。")
+    await _mark_user_substep(run_id, "reflector", "check_actionability", "检查建议是否可执行", "running", "正在评估建议是否清晰且可执行。")
+    await _mark_user_substep(
+        run_id,
+        "reflector",
+        "check_actionability",
+        "检查建议是否可执行",
+        "done",
+        "可执行性检查完成。" if planner_decision == "SUMMARY" else "建议仍需进一步完善。",
+    )
+    await _mark_user_substep(run_id, "reflector", "review_done", "完成质量复核", "done", "质量复核已完成。")
 
     log_stage(logger, "reflector", reflection_text)
     logger.info("[reflector] exit")
-    await mark_stage(state["run_id"], "reflector", "done", content=reflection_text)
+    await mark_stage(run_id, "reflector", "done", content=reflection_text)
     update: dict[str, Any] = {
         "messages": [raw_ai],
         "reflection": reflection_text,
@@ -681,12 +772,17 @@ async def reflector_node(state: MedAgentState) -> dict:
 async def summarize_node(state: MedAgentState) -> dict:
     """Produce a patient-friendly summary incorporating reflection."""
     logger.info("[summarizer] enter")
-    await mark_stage(state["run_id"], "summarize", "running", content="正在生成患者可读摘要。")
+    run_id = state["run_id"]
+    await mark_stage(run_id, "summarize", "running", content="正在生成面向你的总结。")
+    await _mark_user_substep(run_id, "summarize", "summary_plain", "转换为通俗表达", "running", "正在把关键信息转换为易读表达。")
 
     if state.get("summary"):
         log_stage(logger, "summarizer", state["summary"])
         logger.info("[summarizer] exit (pre-filled summary)")
-        await mark_stage(state["run_id"], "summarize", "done", content=state["summary"])
+        await _mark_user_substep(run_id, "summarize", "summary_plain", "转换为通俗表达", "done", "通俗表达已完成。")
+        await _mark_user_substep(run_id, "summarize", "summary_actions", "生成行动建议", "done", "行动建议已就绪。")
+        await _mark_user_substep(run_id, "summarize", "summary_done", "输出最终摘要", "done", "最终摘要已输出。")
+        await mark_stage(run_id, "summarize", "done", content=state["summary"])
         return {
             "summary": state["summary"],
             "summary_struct": state.get("summary_struct"),
@@ -705,9 +801,12 @@ async def summarize_node(state: MedAgentState) -> dict:
         )
         ai_response = response if isinstance(response, AIMessage) else AIMessage(content=str(response))
         summary_text = str(ai_response.content)
+        await _mark_user_substep(run_id, "summarize", "summary_plain", "转换为通俗表达", "done", "已完成内容组织。")
+        await _mark_user_substep(run_id, "summarize", "summary_actions", "生成行动建议", "done", "已补充可执行建议。")
+        await _mark_user_substep(run_id, "summarize", "summary_done", "输出最终摘要", "done", "已输出最终回复。")
         log_stage(logger, "summarizer", summary_text)
         logger.info("[summarizer] exit (non-medical llm reply)")
-        await mark_stage(state["run_id"], "summarize", "done", content=summary_text)
+        await mark_stage(run_id, "summarize", "done", content=summary_text)
         return {
             "summary": summary_text,
             "summary_struct": {
@@ -734,10 +833,13 @@ async def summarize_node(state: MedAgentState) -> dict:
         ],
     )
     summary_text = _render_summary_text(summary_struct_model)
+    await _mark_user_substep(run_id, "summarize", "summary_plain", "转换为通俗表达", "done", "已完成通俗化整理。")
+    await _mark_user_substep(run_id, "summarize", "summary_actions", "生成行动建议", "done", "已生成可执行行动建议。")
+    await _mark_user_substep(run_id, "summarize", "summary_done", "输出最终摘要", "done", "已输出最终摘要。")
 
     log_stage(logger, "summarizer", summary_text)
     logger.info("[summarizer] exit")
-    await mark_stage(state["run_id"], "summarize", "done", content=summary_text)
+    await mark_stage(run_id, "summarize", "done", content=summary_text)
     return {
         "summary": summary_text,
         "summary_struct": summary_struct_model.model_dump(),

@@ -65,15 +65,17 @@ def _route_stages(intent: str) -> list[StageItem]:
                 label="意图识别",
                 status="running",
                 content="",
+                substeps=[],
+                current_substep="",
             )
         ]
     return [
-        StageItem(key="quick_router", label="意图识别", status="running", content=""),
-        StageItem(key="planner", label="管理计划生成", status="pending", content=""),
-        StageItem(key="tooler", label="病历/影像解析", status="pending", content=""),
-        StageItem(key="searcher", label="医学检索补充", status="pending", content=""),
-        StageItem(key="reflector", label="一致性校验", status="pending", content=""),
-        StageItem(key="summarize", label="患者摘要生成", status="pending", content=""),
+        StageItem(key="quick_router", label="意图识别", status="running", content="", substeps=[], current_substep=""),
+        StageItem(key="planner", label="管理计划生成", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="tooler", label="病历/影像解析", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="searcher", label="医学检索补充", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="reflector", label="一致性校验", status="pending", content="", substeps=[], current_substep=""),
+        StageItem(key="summarize", label="患者摘要生成", status="pending", content="", substeps=[], current_substep=""),
     ]
 
 
@@ -209,38 +211,44 @@ async def run_multi_agent(
     summary_output = result.get("summary", "")
     tool_skipped = bool(result.get("tool_skipped"))
 
-    stages = [
-        StageItem(
-            key="planner",
-            label="管理计划生成",
-            status="done" if planner_output else "skipped",
-            content=planner_output,
-        ),
-        StageItem(
-            key="tooler",
-            label="病历/影像解析",
-            status="skipped" if tool_skipped else ("done" if tool_output else "skipped"),
-            content="" if tool_skipped else tool_output,
-        ),
-        StageItem(
-            key="searcher",
-            label="医学检索补充",
-            status="done" if search_output else "skipped",
-            content=search_output,
-        ),
-        StageItem(
-            key="reflector",
-            label="一致性校验",
-            status="done" if reflect_output else "skipped",
-            content=reflect_output,
-        ),
-        StageItem(
-            key="summarize",
-            label="患者摘要",
-            status="done" if summary_output else "skipped",
-            content=summary_output,
-        ),
-    ]
+    snapshot = await get_run(run_id)
+    stages: list[StageItem] = []
+    if snapshot and snapshot.get("stages"):
+        for stage in snapshot["stages"]:
+            stages.append(StageItem.model_validate(stage))
+    else:
+        stages = [
+            StageItem(
+                key="planner",
+                label="管理计划生成",
+                status="done" if planner_output else "skipped",
+                content=planner_output,
+            ),
+            StageItem(
+                key="tooler",
+                label="病历/影像解析",
+                status="skipped" if tool_skipped else ("done" if tool_output else "skipped"),
+                content="" if tool_skipped else tool_output,
+            ),
+            StageItem(
+                key="searcher",
+                label="医学检索补充",
+                status="done" if search_output else "skipped",
+                content=search_output,
+            ),
+            StageItem(
+                key="reflector",
+                label="一致性校验",
+                status="done" if reflect_output else "skipped",
+                content=reflect_output,
+            ),
+            StageItem(
+                key="summarize",
+                label="患者摘要",
+                status="done" if summary_output else "skipped",
+                content=summary_output,
+            ),
+        ]
 
     response_payload = MultiAgentResponse(
         run_id=run_id,
