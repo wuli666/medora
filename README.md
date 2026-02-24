@@ -58,6 +58,79 @@ After a patient uploads clinical notes, reports, or images, Medora extracts diag
 - Progress management: `runtime/progress.py` provides a six-stage timeline per run and updates via in-memory structures and SSE (`/api/multi-agent/events/{run_id}`) for frontend subscriptions.
 - Patient & follow-up data: `utils/db.py` uses `aiosqlite` to initialize `patients / medical_records / follow_up_plans` tables to store patient info, structured records, and follow-up plans.
 
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Python ≥ 3.11
+- Node.js ≥ 18
+- CUDA-capable GPU (recommended for PDF OCR / layout analysis)
+
+### 1. Clone & configure environment variables
+
+```bash
+git clone https://github.com/wuli666/medgemma_afu.git
+cd medgemma_afu
+cp .env.example .env
+# Edit .env to fill in your API keys (DASHSCOPE_API_KEY, TAVILY_API_KEY, etc.)
+```
+
+### 2. Install backend dependencies
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Set up MinerU (PDF parsing with OCR & layout analysis)
+
+```bash
+# Download OCR / layout analysis models (~several GB)
+mineru-models-download
+
+# Edit ~/magic-pdf.json — make sure "models-dir" points to the actual model folder,
+# e.g. "/home/<user>/.cache/magic-pdf/models/models"
+
+# If you don't need formula recognition, set formula-config.enable to false
+# to avoid transformers version conflicts.
+```
+
+### 4. Install frontend dependencies
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### 5. Run
+
+**Option A — use the start script:**
+
+```bash
+bash start_all.sh
+```
+
+**Option B — start manually:**
+
+```bash
+# Terminal 1: backend
+source .venv/bin/activate
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+# Terminal 2: frontend
+cd frontend
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+Open http://localhost:5173 in your browser.
+
+### Notes
+
+- `magic-pdf.json` lives at `~/magic-pdf.json`. Key settings: `models-dir` (model path), `device-mode` (`cuda` / `cpu`), `formula-config.enable` (set `false` if transformers version conflicts arise).
+- If using a conda environment (e.g. `rag`) with PyTorch pre-installed, start the backend with that environment's Python instead of `.venv`.
+
 ## 📁 Project Structure
 
 ```

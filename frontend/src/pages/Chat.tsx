@@ -188,6 +188,7 @@ const Chat = () => {
   const [loadingVisibleCount, setLoadingVisibleCount] = useState(1);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
+  const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
   const [yearSelectorOpen, setYearSelectorOpen] = useState(false);
   const [monthSelectorOpen, setMonthSelectorOpen] = useState(false);
   const [displayYear, setDisplayYear] = useState<number>(new Date().getFullYear());
@@ -243,8 +244,8 @@ const Chat = () => {
   }, []);
   const handleSend = async () => {
     const text = input.trim();
-    if (!text && !previewImage) return;
-    const outboundText = text || "请分析这张影像";
+    if (!text && !previewImage && !selectedPdfFile) return;
+    const outboundText = text || (selectedPdfFile ? "请分析这份PDF报告" : "请分析这张影像");
 
     const userMsg: UiMessage = {
       id: crypto.randomUUID(),
@@ -288,6 +289,9 @@ const Chat = () => {
       if (selectedImageFile) {
         formData.append("image", selectedImageFile);
       }
+      if (selectedPdfFile) {
+        formData.append("pdf", selectedPdfFile);
+      }
 
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -320,6 +324,7 @@ const Chat = () => {
       setInput("");
       setPreviewImage(null);
       setSelectedImageFile(null);
+      setSelectedPdfFile(null);
       if (fileRef.current) fileRef.current.value = "";
     } catch (error) {
       const aiMsg: UiMessage = {
@@ -345,10 +350,17 @@ const Chat = () => {
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setSelectedImageFile(file);
-    const reader = new FileReader();
-    reader.onload = () => setPreviewImage(reader.result as string);
-    reader.readAsDataURL(file);
+    if (file.type === "application/pdf") {
+      setSelectedPdfFile(file);
+      setSelectedImageFile(null);
+      setPreviewImage(null);
+    } else {
+      setSelectedImageFile(file);
+      setSelectedPdfFile(null);
+      const reader = new FileReader();
+      reader.onload = () => setPreviewImage(reader.result as string);
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -890,6 +902,45 @@ const Chat = () => {
           )}
         </AnimatePresence>
 
+        {/* PDF preview */}
+        <AnimatePresence>
+          {selectedPdfFile && (
+            <motion.div
+              className="max-w-4xl mx-auto px-4 w-full"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+            >
+              <div
+                className="p-2 pb-0 relative inline-flex items-center gap-2 rounded-xl group ml-[44px]"
+                style={{
+                  backdropFilter: 'blur(20px)',
+                  WebkitBackdropFilter: 'blur(20px)',
+                }}
+              >
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/40">
+                  <svg className="w-5 h-5 text-red-500 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM14 3.5L18.5 8H14V3.5zM6 20V4h7v5h5v11H6z"/>
+                    <text x="7" y="17" fontSize="6" fontWeight="bold" fill="currentColor">PDF</text>
+                  </svg>
+                  <span className="text-sm text-foreground truncate max-w-[200px]">{selectedPdfFile.name}</span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="rounded-lg h-8 w-8 absolute right-3 top-3 opacity-0 group-hover:opacity-100 transition-opacity bg-white/50 hover:bg-white transition-colors"
+                  onClick={() => {
+                    setSelectedPdfFile(null);
+                    if (fileRef.current) fileRef.current.value = "";
+                  }}
+                >
+                  <X className="w-4 h-4 text-black" />
+                </Button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Input */}
         <div className="p-4 shrink-0">
           <div className="flex items-end gap-2 max-w-4xl mx-auto">
@@ -917,7 +968,7 @@ const Chat = () => {
                 boxShadow: '0 8px 32px rgba(255, 255, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.2)'
               }}
             >
-              <input type="file" ref={fileRef} className="hidden" accept="image/*" onChange={handleFile} />
+              <input type="file" ref={fileRef} className="hidden" accept="image/*,application/pdf" onChange={handleFile} />
               <Textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -938,7 +989,7 @@ const Chat = () => {
                   boxShadow: '0 4px 16px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -1px 0 rgba(99, 102, 241, 0.2)'
                 }}
                 onClick={handleSend}
-                disabled={isLoading || (!input.trim() && !previewImage)}
+                disabled={isLoading || (!input.trim() && !previewImage && !selectedPdfFile)}
               >
                 <Send className="w-4 h-4 text-primary-foreground" />
               </Button>

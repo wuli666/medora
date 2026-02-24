@@ -57,6 +57,79 @@ https://github.com/user-attachments/assets/7c7dc6c9-baf6-4bb8-a335-5f1f880797fa
 - 运行进度管理：`runtime/progress.py` 对每次调用生成默认六阶段的时间线，并在 `begin_run / mark_stage / complete_run / fail_run` 时通过内存结构与 SSE 广播更新，前端直接订阅 `/api/multi-agent/events/{run_id}` 即可获得“阶段状态 + 内容快照”。
 - 患者与随访数据：`utils/db.py` 使用 `aiosqlite` 初始化 `patients / medical_records / follow_up_plans` 三张表，分别存储患者基本信息、结构化病历记录及随访计划内容，为后续扩展“长期随访页面 / 患者故事时间线”等功能预留基础数据层。
 
+## 🚀 快速开始
+
+### 环境要求
+
+- Python ≥ 3.11
+- Node.js ≥ 18
+- 推荐有 CUDA GPU（用于 PDF OCR / 版面分析）
+
+### 1. 克隆项目 & 配置环境变量
+
+```bash
+git clone https://github.com/wuli666/medgemma_afu.git
+cd medgemma_afu
+cp .env.example .env
+# 编辑 .env，填入你的 API Key（DASHSCOPE_API_KEY、TAVILY_API_KEY 等）
+```
+
+### 2. 安装后端依赖
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. 配置 MinerU（PDF 解析 / OCR / 版面分析）
+
+```bash
+# 下载 OCR / 版面分析模型（约几 GB）
+mineru-models-download
+
+# 编辑 ~/magic-pdf.json，确认 "models-dir" 指向实际模型目录，
+# 例如 "/home/<用户名>/.cache/magic-pdf/models/models"
+
+# 如果不需要公式识别，将 formula-config.enable 设为 false，
+# 可以避免 transformers 版本冲突。
+```
+
+### 4. 安装前端依赖
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### 5. 启动
+
+**方式 A — 使用启动脚本：**
+
+```bash
+bash start_all.sh
+```
+
+**方式 B — 手动分别启动：**
+
+```bash
+# 终端 1：后端
+source .venv/bin/activate
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+# 终端 2：前端
+cd frontend
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+浏览器打开 http://localhost:5173 即可使用。
+
+### 注意事项
+
+- MinerU 配置文件在 `~/magic-pdf.json`，关键字段：`models-dir`（模型路径）、`device-mode`（`cuda` / `cpu`）、`formula-config.enable`（如 transformers 版本冲突可设为 `false`）。
+- 如果你使用 conda 环境（如 `rag`）且已有 PyTorch，启动后端时请用该环境的 Python，而非 `.venv`。
+
 ## 📁 项目结构
 
 ```

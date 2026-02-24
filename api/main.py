@@ -159,7 +159,7 @@ async def run_multi_agent(
             f.write(content)
             tmp_path = f.name
         try:
-            pdf_data = parse_pdf(tmp_path)
+            pdf_data = await parse_pdf(tmp_path)
             if pdf_data["text"]:
                 raw_text += "\n\n" + pdf_data["text"]
             images.extend(pdf_data["images"])

@@ -7,7 +7,7 @@ langchain-openai
 langgraph
 pydantic
 pydantic-settings
-PyMuPDF
+magic-pdf[full]
 python-dotenv
 python-multipart
 tavily-python
