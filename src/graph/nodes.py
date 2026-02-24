@@ -100,6 +100,17 @@ def _join_lines(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in cleaned)
 
 
+def _to_ai_message_json(model: BaseModel) -> str:
+    """Serialize structured output compatibly across pydantic versions."""
+    if hasattr(model, "model_dump"):
+        payload = model.model_dump(mode="json")
+    elif hasattr(model, "dict"):
+        payload = model.dict()  # type: ignore[attr-defined]
+    else:
+        return str(model)
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _render_care_plan_text(plan: CarePlan) -> str:
     return (
         "1. Condition Analysis\n"
@@ -206,7 +217,7 @@ async def _invoke_structured(
             parsed_model = response
         else:
             parsed_model = schema.model_validate(response)
-    return parsed_model, AIMessage(content=parsed_model.model_dump_json(ensure_ascii=False))
+    return parsed_model, AIMessage(content=_to_ai_message_json(parsed_model))
 
 
 def _build_plan_payload(

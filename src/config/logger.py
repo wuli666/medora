@@ -1,4 +1,5 @@
 import logging
+import json
 from typing import Any
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -118,7 +119,7 @@ def _stringify_log_content(content: Any) -> str:
         return content
     if isinstance(content, BaseModel):
         try:
-            return content.model_dump_json(ensure_ascii=False)
+            return json.dumps(content.model_dump(mode="json"), ensure_ascii=False)
         except Exception:
             return str(content)
     return str(content)

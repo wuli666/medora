@@ -329,7 +329,7 @@ const Chat = () => {
   const [calendarPreview, setCalendarPreview] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isCentered, setIsCentered] = useState(true);
-  const [lang, setLang] = useState<Lang>("zh");
+  const [lang, setLang] = useState<Lang>("en");
   const [loadingFlow, setLoadingFlow] = useState<LoadingStage[]>([]);
   const [loadingStageIdx, setLoadingStageIdx] = useState(0);
   const [loadingVisibleCount, setLoadingVisibleCount] = useState(1);
