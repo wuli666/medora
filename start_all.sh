@@ -25,11 +25,18 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-if [[ ! -x "${ROOT_DIR}/.venv/bin/python" ]]; then
-  echo "Missing python venv at ${ROOT_DIR}/.venv/bin/python"
-  echo "Create it first, e.g. python -m venv .venv && .venv/bin/pip install -r requirements.txt"
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+  PYTHON="${CONDA_PREFIX}/bin/python"
+elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  PYTHON="${VIRTUAL_ENV}/bin/python"
+else
+  PYTHON="$(command -v python3 || command -v python)"
+fi
+if [[ -z "${PYTHON}" || ! -x "${PYTHON}" ]]; then
+  echo "No python found. Activate your conda/venv environment first."
   exit 1
 fi
+echo "Using Python: ${PYTHON}"
 
 if [[ ! -d "${ROOT_DIR}/frontend/node_modules" ]]; then
   echo "Missing frontend/node_modules"
@@ -40,7 +47,7 @@ fi
 echo "Starting backend on http://localhost:${BACKEND_PORT} ..."
 (
   cd "${ROOT_DIR}"
-  exec .venv/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port "${BACKEND_PORT}"
+  exec "${PYTHON}" -m uvicorn api.main:app --host 0.0.0.0 --port "${BACKEND_PORT}"
 ) &
 BACKEND_PID=$!
 
